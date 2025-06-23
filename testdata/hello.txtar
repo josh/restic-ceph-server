@@ -1,0 +1,5 @@
+exec restic-ceph-server
+cmp stdout output.txt
+
+-- output.txt --
+Hello, World!
