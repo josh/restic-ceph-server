@@ -1,6 +1,6 @@
-env RESTIC_REPOSITORY=$WORK/repo
+! exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+cmp stdout out.txt
 
-exec restic init --password-file $WORK/password.txt
-
+-- out.txt --
 -- password.txt --
 secret
