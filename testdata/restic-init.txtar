@@ -1,0 +1,6 @@
+env RESTIC_REPOSITORY=$WORK/repo
+
+exec restic init --password-file $WORK/password.txt
+
+-- password.txt --
+secret
