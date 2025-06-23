@@ -7,11 +7,17 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/ceph/go-ceph/rados"
 	"golang.org/x/net/http2"
 )
 
 func main() {
 	handler := http.NewServeMux()
+
+	_, err := setupCephConn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
 
 	handler.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
@@ -61,4 +67,20 @@ func main() {
 	server.ServeConn(conn, &http2.ServeConnOpts{
 		Handler: handler,
 	})
+}
+
+func setupCephConn() (*rados.Conn, error) {
+	conn, err := rados.NewConn()
+	if err != nil {
+		return nil, err
+	}
+	err = conn.ReadDefaultConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	err = conn.Connect()
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
