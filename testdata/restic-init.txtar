@@ -1,6 +1,12 @@
 ! exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
 cmp stdout out.txt
+cmp stderr err.txt
 
 -- out.txt --
+-- err.txt --
+rclone: HEAD /config
+rclone: POST /?create=true
+Fatal: create repository at rclone: failed: Fatal: unable to open repository at rclone:: unexpected HTTP response (404): 404 Not Found
+
 -- password.txt --
 secret
