@@ -1,0 +1,34 @@
+name: Go
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    env:
+      RESTIC_VERSION: "0.18.0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install restic
+        run: |
+          set -o xtrace
+          curl --location "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" --output "restic_${RESTIC_VERSION}_linux_amd64.bz2"
+          bunzip2 "restic_${RESTIC_VERSION}_linux_amd64.bz2"
+          chmod +x "restic_${RESTIC_VERSION}_linux_amd64"
+          sudo mv "restic_${RESTIC_VERSION}_linux_amd64" /usr/local/bin/restic
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: |
+          go build
+
+      - name: Test
+        run: |
+          go test
