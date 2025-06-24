@@ -5,8 +5,14 @@ set -o nounset
 set -o pipefail
 set -o xtrace
 
-sudo apt update
-sudo apt install --yes restic ceph-common libcephfs-dev librbd-dev librados-dev
+sudo apt-get update
+sudo apt-get install --yes \
+	restic \
+	ceph-common \
+	libcephfs-dev \
+	librbd-dev \
+	librados-dev \
+	snapd
 sudo snap install microceph
 
 sudo microceph cluster bootstrap
