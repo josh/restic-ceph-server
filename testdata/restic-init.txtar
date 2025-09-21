@@ -6,7 +6,7 @@ cmp stderr err.txt
 -- err.txt --
 rclone: HEAD /config
 rclone: POST /?create=true
-Fatal: create repository at rclone: failed: server response unexpected: 404 Not Found (404)
+Fatal: create repository at rclone: failed: Fatal: unable to open repository at rclone:: unexpected HTTP response (404): 404 Not Found
 
 -- password.txt --
 secret

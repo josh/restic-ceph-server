@@ -1,0 +1,12 @@
+env CEPH_POOL=bad
+! exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+cmp stdout out.txt
+cmp stderr err.txt
+
+-- out.txt --
+-- err.txt --
+rclone: error: pool 'bad' does not exist: rados: ret=-2, No such file or directory
+Fatal: create repository at rclone: failed: Fatal: unable to open repository at rclone:: error talking HTTP to rclone: exit status 1
+
+-- password.txt --
+secret
