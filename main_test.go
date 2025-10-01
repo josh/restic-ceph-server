@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -43,10 +44,12 @@ func TestScript(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	updateScripts, _ := strconv.ParseBool(os.Getenv("UPDATE_SCRIPTS"))
+
 	testscript.Run(t, testscript.Params{
 		Dir:             "testdata",
 		ContinueOnError: true,
-		UpdateScripts:   os.Getenv("CI") == "",
+		UpdateScripts:   updateScripts,
 		Setup: func(env *testscript.Env) error {
 			poolName, err := createCephPool(ctx, confPath)
 			if err != nil {
