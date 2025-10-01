@@ -16,7 +16,8 @@ func main() {
 
 	_, err := setupCephConn()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 
 	handler.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
@@ -70,17 +71,34 @@ func main() {
 }
 
 func setupCephConn() (*rados.Conn, error) {
+	poolName := os.Getenv("CEPH_POOL")
+	if poolName == "" {
+		return nil, fmt.Errorf("CEPH_POOL environment variable is required")
+	}
+
 	conn, err := rados.NewConn()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create RADOS connection: %v", err)
 	}
-	err = conn.ReadDefaultConfigFile()
+
+	if cephConf := os.Getenv("CEPH_CONF"); cephConf != "" {
+		err = conn.ReadConfigFile(cephConf)
+	} else {
+		err = conn.ReadDefaultConfigFile()
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
+
 	err = conn.Connect()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to connect to RADOS: %v", err)
 	}
+
+	_, err = conn.GetPoolByName(poolName)
+	if err != nil {
+		return nil, fmt.Errorf("pool '%s' does not exist: %v", poolName, err)
+	}
+
 	return conn, nil
 }
