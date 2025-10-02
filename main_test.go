@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -33,12 +32,15 @@ func TestScript(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = startCephMon(ctx, confPath)
+	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	err = startCephMon(ctx, readyCtx, confPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = startCephOsd(ctx, confPath)
+	err = startCephOsd(ctx, readyCtx, confPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +187,7 @@ func generateINIConfig(config map[string]map[string]string) string {
 	return result.String()
 }
 
-func startCephMon(ctx context.Context, confPath string) error {
+func startCephMon(ctx context.Context, readyCtx context.Context, confPath string) error {
 	cmd := exec.CommandContext(ctx, "ceph-mon", "--conf", confPath, "--id", "mon1", "--foreground")
 
 	if testing.Verbose() {
@@ -198,23 +200,22 @@ func startCephMon(ctx context.Context, confPath string) error {
 		return fmt.Errorf("failed to spawn ceph-mon: %w", err)
 	}
 
-	for range 10 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if status, err := checkCephStatus(ctx, confPath); err == nil && status.Monmap.NumMons > 0 {
-			return nil
-		}
-		time.Sleep(1 * time.Second)
-		continue
-	}
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
-	return fmt.Errorf("mon.mon1 timed out before becoming ready")
+	for {
+		select {
+		case <-readyCtx.Done():
+			return readyCtx.Err()
+		case <-ticker.C:
+			if status, err := checkCephStatus(readyCtx, confPath); err == nil && status.Monmap.NumMons > 0 {
+				return nil
+			}
+		}
+	}
 }
 
-func startCephOsd(ctx context.Context, confPath string) error {
+func startCephOsd(ctx context.Context, readyCtx context.Context, confPath string) error {
 	cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--mkfs")
 	if testing.Verbose() {
 		cmd.Stdout = os.Stderr
@@ -237,24 +238,21 @@ func startCephOsd(ctx context.Context, confPath string) error {
 		return fmt.Errorf("failed to start OSD: %w", err)
 	}
 
-	for range 10 {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if status, err := checkCephStatus(ctx, confPath); err == nil {
-			if status.Osdmap.NumUpOsds > 0 {
-				return nil
+		case <-readyCtx.Done():
+			return readyCtx.Err()
+		case <-ticker.C:
+			if status, err := checkCephStatus(readyCtx, confPath); err == nil {
+				if status.Osdmap.NumUpOsds > 0 {
+					return nil
+				}
 			}
 		}
-		time.Sleep(1 * time.Second)
-		continue
 	}
-
-	cmd.Process.Signal(syscall.SIGTERM)
-	cmd.Wait()
-	return fmt.Errorf("osd.0 timed out before becoming ready")
 }
 
 type cephStatus struct {
