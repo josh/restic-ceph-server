@@ -56,7 +56,9 @@ func TestScript(t *testing.T) {
 				return err
 			}
 
-			env.Setenv("RESTIC_CEPH_SERVER_GLOBAL_TIMEOUT", "30s")
+			if deadline, ok := ctx.Deadline(); ok {
+				env.Setenv("RESTIC_CEPH_SERVER_DEADLINE", deadline.Format(time.RFC3339))
+			}
 			env.Setenv("CEPH_CONF", confPath)
 			env.Setenv("CEPH_POOL", poolName)
 

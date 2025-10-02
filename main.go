@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -23,30 +22,27 @@ var (
 )
 
 type Config struct {
-	GlobalTimeout time.Duration
+	Deadline *time.Time
 }
 
-func parseFlags() (Config, error) {
-	var globalTimeout = flag.Duration("global-timeout", 0, "Global timeout for the server (e.g., 30s)")
-	flag.Parse()
+func parseConfig() (Config, error) {
+	var deadline *time.Time
 
-	if *globalTimeout == 0 {
-		if envTimeout := os.Getenv("RESTIC_CEPH_SERVER_GLOBAL_TIMEOUT"); envTimeout != "" {
-			if parsed, err := time.ParseDuration(envTimeout); err == nil {
-				*globalTimeout = parsed
-			} else {
-				return Config{}, fmt.Errorf("invalid RESTIC_CEPH_SERVER_GLOBAL_TIMEOUT value: %s", envTimeout)
-			}
+	if envDeadline := os.Getenv("RESTIC_CEPH_SERVER_DEADLINE"); envDeadline != "" {
+		if parsed, err := time.Parse(time.RFC3339, envDeadline); err == nil {
+			deadline = &parsed
+		} else {
+			return Config{}, fmt.Errorf("invalid RESTIC_CEPH_SERVER_DEADLINE value: %s", envDeadline)
 		}
 	}
 
 	return Config{
-		GlobalTimeout: *globalTimeout,
+		Deadline: deadline,
 	}, nil
 }
 
 func main() {
-	config, err := parseFlags()
+	config, err := parseConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
@@ -108,10 +104,10 @@ func main() {
 
 	ctx := context.Background()
 
-	if config.GlobalTimeout > 0 {
-		var timeoutCancel context.CancelFunc
-		ctx, timeoutCancel = context.WithTimeout(ctx, config.GlobalTimeout)
-		defer timeoutCancel()
+	if config.Deadline != nil {
+		var deadlineCancel context.CancelFunc
+		ctx, deadlineCancel = context.WithDeadline(ctx, *config.Deadline)
+		defer deadlineCancel()
 	}
 
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
@@ -130,7 +126,7 @@ func main() {
 	})
 
 	if ctx.Err() == context.DeadlineExceeded {
-		fmt.Fprintf(os.Stderr, "Server terminated due to global timeout\n")
+		fmt.Fprintf(os.Stderr, "Server terminated due to deadline\n")
 		os.Exit(1)
 	}
 }

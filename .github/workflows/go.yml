@@ -37,4 +37,4 @@ jobs:
 
       - name: Test
         run: |
-          go test
+          go test -v -timeout 30s

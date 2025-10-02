@@ -32,13 +32,13 @@ sudo apt-get install ceph librados-dev
 Run all tests with:
 
 ```sh
-go test ./...
+go test -v -timeout 30s ./...
 ```
 
 To generate a coverage report:
 
 ```sh
-go test -cover ./...
+go test -v -timeout 30s -cover ./...
 ```
 
 The test suite uses [testscript](https://pkg.go.dev/github.com/rogpeppe/go-internal/testscript). Test files live in the `testdata` directory and contain scripts that execute commands and compare their output. These tests differ from standard Go tests because they drive the program via shell-like scripts instead of calling functions directly.
