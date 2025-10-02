@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
 	"sync"
-	"time"
+	"syscall"
 
 	"github.com/ceph/go-ceph/rados"
 	"golang.org/x/net/http2"
@@ -34,7 +36,6 @@ func main() {
 	})
 
 	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-
 		// Restic sends a preflight /file-123 test request, ignore it
 		fileTestRegex := regexp.MustCompile(`^/file-\d+$`)
 		if r.Method == "GET" && fileTestRegex.MatchString(r.URL.Path) {
@@ -74,10 +75,14 @@ func main() {
 		http.Error(w, http.StatusText(http.StatusNotImplemented), http.StatusNotImplemented)
 	})
 
-	// Test timeout after 5 seconds
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
-		time.Sleep(5 * time.Second)
-		os.Exit(0)
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		<-sigChan
+		cancel()
 	}()
 
 	server := &http2.Server{}
@@ -88,6 +93,7 @@ func main() {
 	}
 
 	server.ServeConn(stdioConn, &http2.ServeConnOpts{
+		Context: ctx,
 		Handler: handler,
 	})
 }
