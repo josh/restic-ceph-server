@@ -72,18 +72,18 @@ func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
 
 	cephConfig := map[string]map[string]string{
 		"global": {
-			"fsid":                            fsid,
-			"mon_host":                        "v1:127.0.0.1:6789/0",
-			"public_network":                  "127.0.0.1/32",
-			"auth_cluster_required":           "none",
-			"auth_service_required":           "none",
-			"auth_client_required":            "none",
+			"fsid":                                  fsid,
+			"mon_host":                              "v1:127.0.0.1:6789/0",
+			"public_network":                        "127.0.0.1/32",
+			"auth_cluster_required":                 "none",
+			"auth_service_required":                 "none",
+			"auth_client_required":                  "none",
 			"auth_allow_insecure_global_id_reclaim": "true",
-			"pid_file":                        filepath.Join(tmpDir, "$type.$id.pid"),
-			"admin_socket":                    filepath.Join(tmpDir, "$name.$pid.asok"),
-			"keyring":                         filepath.Join(tmpDir, "keyring"),
-			"log_to_file":                     "false",
-			"log_to_stderr":                   "true",
+			"pid_file":                              filepath.Join(tmpDir, "$type.$id.pid"),
+			"admin_socket":                          filepath.Join(tmpDir, "$name.$pid.asok"),
+			"keyring":                               filepath.Join(tmpDir, "keyring"),
+			"log_to_file":                           "false",
+			"log_to_stderr":                         "true",
 		},
 		"mon": {
 			"mon_initial_members":       "mon1",
@@ -199,6 +199,11 @@ func startCephMon(ctx context.Context, confPath string) error {
 	}
 
 	for range 10 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if status, err := checkCephStatus(ctx, confPath); err == nil && status.Monmap.NumMons > 0 {
 			return nil
 		}
@@ -233,6 +238,11 @@ func startCephOsd(ctx context.Context, confPath string) error {
 	}
 
 	for range 10 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if status, err := checkCephStatus(ctx, confPath); err == nil {
 			if status.Osdmap.NumUpOsds > 0 {
 				return nil
