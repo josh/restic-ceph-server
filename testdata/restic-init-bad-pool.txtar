@@ -5,8 +5,10 @@ cmp stderr err.txt
 
 -- out.txt --
 -- err.txt --
-rclone: error: pool 'bad' does not exist: rados: ret=-2, No such file or directory
-Fatal: create repository at rclone: failed: Fatal: unable to open repository at rclone:: error talking HTTP to rclone: exit status 1
+rclone: HEAD /config
+rclone: POST /?create=true
+rclone: pool check failed: pool 'bad' does not exist: rados: ret=-2, No such file or directory
+Fatal: create repository at rclone: failed: Fatal: unable to open repository at rclone:: unexpected HTTP response (404): 404 Not Found
 
 -- password.txt --
 secret

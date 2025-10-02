@@ -14,7 +14,13 @@ import (
 func main() {
 	handler := http.NewServeMux()
 
-	_, err := setupCephConn()
+	poolName := os.Getenv("CEPH_POOL")
+	if poolName == "" {
+		fmt.Fprintln(os.Stderr, "error: CEPH_POOL environment variable is required")
+		os.Exit(1)
+	}
+
+	radosConn, err := setupCephConn()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -43,6 +49,12 @@ func main() {
 
 		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
 
+		if err := ensurePoolExists(radosConn, poolName); err != nil {
+			fmt.Fprintf(os.Stderr, "pool check failed: %v\n", err)
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
 		if r.Method == "POST" && r.URL.Path == "/" && r.URL.Query().Get("create") == "true" {
 			// w.WriteHeader(http.StatusOK)
 			http.NotFound(w, r)
@@ -60,22 +72,17 @@ func main() {
 
 	server := &http2.Server{}
 
-	conn := &StdioConn{
+	stdioConn := &StdioConn{
 		stdin:  os.Stdin,
 		stdout: os.Stdout,
 	}
 
-	server.ServeConn(conn, &http2.ServeConnOpts{
+	server.ServeConn(stdioConn, &http2.ServeConnOpts{
 		Handler: handler,
 	})
 }
 
 func setupCephConn() (*rados.Conn, error) {
-	poolName := os.Getenv("CEPH_POOL")
-	if poolName == "" {
-		return nil, fmt.Errorf("CEPH_POOL environment variable is required")
-	}
-
 	conn, err := rados.NewConn()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RADOS connection: %v", err)
@@ -95,10 +102,14 @@ func setupCephConn() (*rados.Conn, error) {
 		return nil, fmt.Errorf("failed to connect to RADOS: %v", err)
 	}
 
-	_, err = conn.GetPoolByName(poolName)
+	return conn, nil
+}
+
+func ensurePoolExists(conn *rados.Conn, poolName string) error {
+	_, err := conn.GetPoolByName(poolName)
 	if err != nil {
-		return nil, fmt.Errorf("pool '%s' does not exist: %v", poolName, err)
+		return fmt.Errorf("pool '%s' does not exist: %v", poolName, err)
 	}
 
-	return conn, nil
+	return nil
 }
