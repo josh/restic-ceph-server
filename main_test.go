@@ -56,6 +56,7 @@ func TestScript(t *testing.T) {
 				return err
 			}
 
+			env.Setenv("RESTIC_CEPH_SERVER_GLOBAL_TIMEOUT", "30s")
 			env.Setenv("CEPH_CONF", confPath)
 			env.Setenv("CEPH_POOL", poolName)
 

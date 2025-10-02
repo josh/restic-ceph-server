@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ceph/go-ceph/rados"
 	"golang.org/x/net/http2"
@@ -20,7 +22,36 @@ var (
 	connErr   error
 )
 
+type Config struct {
+	GlobalTimeout time.Duration
+}
+
+func parseFlags() (Config, error) {
+	var globalTimeout = flag.Duration("global-timeout", 0, "Global timeout for the server (e.g., 30s)")
+	flag.Parse()
+
+	if *globalTimeout == 0 {
+		if envTimeout := os.Getenv("RESTIC_CEPH_SERVER_GLOBAL_TIMEOUT"); envTimeout != "" {
+			if parsed, err := time.ParseDuration(envTimeout); err == nil {
+				*globalTimeout = parsed
+			} else {
+				return Config{}, fmt.Errorf("invalid RESTIC_CEPH_SERVER_GLOBAL_TIMEOUT value: %s", envTimeout)
+			}
+		}
+	}
+
+	return Config{
+		GlobalTimeout: *globalTimeout,
+	}, nil
+}
+
 func main() {
+	config, err := parseFlags()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
 	handler := http.NewServeMux()
 
 	handler.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +106,15 @@ func main() {
 		http.Error(w, http.StatusText(http.StatusNotImplemented), http.StatusNotImplemented)
 	})
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx := context.Background()
+
+	if config.GlobalTimeout > 0 {
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, config.GlobalTimeout)
+		defer timeoutCancel()
+	}
+
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	server := &http2.Server{}
@@ -89,6 +128,11 @@ func main() {
 		Context: ctx,
 		Handler: handler,
 	})
+
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "Server terminated due to global timeout\n")
+		os.Exit(1)
+	}
 }
 
 func getCephConnection() (*rados.Conn, error) {
