@@ -5,26 +5,21 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
 	"golang.org/x/net/http2"
 )
 
+var (
+	radosConn *rados.Conn
+	connOnce  sync.Once
+	connErr   error
+)
+
 func main() {
 	handler := http.NewServeMux()
-
-	poolName := os.Getenv("CEPH_POOL")
-	if poolName == "" {
-		fmt.Fprintln(os.Stderr, "error: CEPH_POOL environment variable is required")
-		os.Exit(1)
-	}
-
-	radosConn, err := setupCephConn()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
 
 	handler.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
@@ -49,9 +44,24 @@ func main() {
 
 		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
 
-		if err := ensurePoolExists(radosConn, poolName); err != nil {
-			fmt.Fprintf(os.Stderr, "pool check failed: %v\n", err)
-			http.Error(w, err.Error(), http.StatusNotFound)
+		poolName := os.Getenv("CEPH_POOL")
+		if poolName == "" {
+			fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+			http.NotFound(w, r)
+			return
+		}
+
+		conn, err := getCephConnection()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		_, err = conn.GetPoolByName(poolName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pool check failed: pool '%s' does not exist: %v\n", poolName, err)
+			http.NotFound(w, r)
 			return
 		}
 
@@ -82,6 +92,13 @@ func main() {
 	})
 }
 
+func getCephConnection() (*rados.Conn, error) {
+	connOnce.Do(func() {
+		radosConn, connErr = setupCephConn()
+	})
+	return radosConn, connErr
+}
+
 func setupCephConn() (*rados.Conn, error) {
 	conn, err := rados.NewConn()
 	if err != nil {
@@ -103,13 +120,4 @@ func setupCephConn() (*rados.Conn, error) {
 	}
 
 	return conn, nil
-}
-
-func ensurePoolExists(conn *rados.Conn, poolName string) error {
-	_, err := conn.GetPoolByName(poolName)
-	if err != nil {
-		return fmt.Errorf("pool '%s' does not exist: %v", poolName, err)
-	}
-
-	return nil
 }
