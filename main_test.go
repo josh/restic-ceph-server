@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -188,9 +187,10 @@ func generateINIConfig(config map[string]map[string]string) string {
 func startCephMon(ctx context.Context, confPath string) error {
 	cmd := exec.CommandContext(ctx, "ceph-mon", "--conf", confPath, "--id", "mon1", "--foreground")
 
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	if testing.Verbose() {
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+	}
 
 	err := cmd.Start()
 	if err != nil {
@@ -205,24 +205,26 @@ func startCephMon(ctx context.Context, confPath string) error {
 		continue
 	}
 
-	return fmt.Errorf("mon.mon1 timed out before becoming ready\noutput: %s", output.String())
+	return fmt.Errorf("mon.mon1 timed out before becoming ready")
 }
 
 func startCephOsd(ctx context.Context, confPath string) error {
-	var output bytes.Buffer
-
 	cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--mkfs")
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	if testing.Verbose() {
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+	}
 
 	err := cmd.Run()
 	if err != nil {
-		return fmt.Errorf("failed to initialize OSD filesystem: %w\noutput: %s", err, output.String())
+		return fmt.Errorf("failed to initialize OSD filesystem: %w", err)
 	}
 
 	cmd = exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--foreground")
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	if testing.Verbose() {
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+	}
 
 	err = cmd.Start()
 	if err != nil {
@@ -241,7 +243,7 @@ func startCephOsd(ctx context.Context, confPath string) error {
 
 	cmd.Process.Signal(syscall.SIGTERM)
 	cmd.Wait()
-	return fmt.Errorf("osd.0 timed out before becoming ready\noutput: %s", output.String())
+	return fmt.Errorf("osd.0 timed out before becoming ready")
 }
 
 type cephStatus struct {
