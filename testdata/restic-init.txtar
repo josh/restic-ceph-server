@@ -1,12 +1,33 @@
 ! exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
 cmp stdout out.txt
-cmp stderr err.txt
+
+stdin stderr
+exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g; s/[0-9]+\.[0-9]+(ms|s)/[DURATION]/g'
+cmp stdout err.txt
 
 -- out.txt --
 -- err.txt --
 rclone: HEAD /config
 rclone: POST /?create=true
-Fatal: create repository at rclone: failed: Fatal: unable to open repository at rclone:: unexpected HTTP response (404): 404 Not Found
+rclone: HEAD /config
+rclone: GET /keys/
+rclone: GET /snapshots/
+rclone: POST /keys/[HEX]
+rclone: DELETE /keys/[HEX]
+Save(<key/[HEX]>) returned error, retrying after [DURATION]: <key/[HEX]> does not exist
+rclone: POST /keys/[HEX]
+rclone: DELETE /keys/[HEX]
+Save(<key/[HEX]>) returned error, retrying after [DURATION]: <key/[HEX]> does not exist
+rclone: POST /keys/[HEX]
+rclone: DELETE /keys/[HEX]
+Save(<key/[HEX]>) returned error, retrying after [DURATION]: <key/[HEX]> does not exist
+rclone: POST /keys/[HEX]
+rclone: DELETE /keys/[HEX]
+Save(<key/[HEX]>) returned error, retrying after [DURATION]: <key/[HEX]> does not exist
+rclone: POST /keys/[HEX]
+rclone: DELETE /keys/[HEX]
+Save(<key/[HEX]>) failed: <key/[HEX]> does not exist
+Fatal: create key in repository at rclone: failed: <key/[HEX]> does not exist
 
 -- password.txt --
 secret
