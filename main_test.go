@@ -18,6 +18,8 @@ import (
 	"github.com/rogpeppe/go-internal/testscript"
 )
 
+const timeoutGracePeriod = 2 * time.Second
+
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
 		"restic-ceph-server": main,
@@ -26,22 +28,29 @@ func TestMain(m *testing.M) {
 
 func TestScript(t *testing.T) {
 	ctx := t.Context()
+	var cancel context.CancelFunc
+
+	if dl, ok := t.Deadline(); ok {
+		if time.Until(dl) <= timeoutGracePeriod {
+			t.Fatalf("not enough time")
+		}
+		ctx, cancel = context.WithDeadline(ctx, dl.Add(-timeoutGracePeriod))
+		t.Cleanup(cancel)
+	}
 
 	confPath, err := setupCephDir(ctx, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer readyCancel()
 
-	err = startCephMon(ctx, readyCtx, confPath)
-	if err != nil {
+	if err := startCephMon(t, ctx, readyCtx, confPath); err != nil {
 		t.Fatal(err)
 	}
 
-	err = startCephOsd(ctx, readyCtx, confPath)
-	if err != nil {
+	if err := startCephOsd(t, ctx, readyCtx, confPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +196,8 @@ func generateINIConfig(config map[string]map[string]string) string {
 	return result.String()
 }
 
-func startCephMon(ctx context.Context, readyCtx context.Context, confPath string) error {
+func startCephMon(t *testing.T, ctx context.Context, readyCtx context.Context, confPath string) error {
+	t.Helper()
 	cmd := exec.CommandContext(ctx, "ceph-mon", "--conf", confPath, "--id", "mon1", "--foreground")
 
 	if testing.Verbose() {
@@ -199,6 +209,12 @@ func startCephMon(ctx context.Context, readyCtx context.Context, confPath string
 	if err != nil {
 		return fmt.Errorf("failed to spawn ceph-mon: %w", err)
 	}
+
+	t.Cleanup(func() {
+		if err := cmd.Wait(); err != nil {
+			t.Logf("ceph-mon exited with error: %v", err)
+		}
+	})
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -215,7 +231,8 @@ func startCephMon(ctx context.Context, readyCtx context.Context, confPath string
 	}
 }
 
-func startCephOsd(ctx context.Context, readyCtx context.Context, confPath string) error {
+func startCephOsd(t *testing.T, ctx context.Context, readyCtx context.Context, confPath string) error {
+	t.Helper()
 	cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--mkfs")
 	if testing.Verbose() {
 		cmd.Stdout = os.Stderr
@@ -237,6 +254,12 @@ func startCephOsd(ctx context.Context, readyCtx context.Context, confPath string
 	if err != nil {
 		return fmt.Errorf("failed to start OSD: %w", err)
 	}
+
+	t.Cleanup(func() {
+		if err := cmd.Wait(); err != nil {
+			t.Logf("ceph-osd exited with error: %v", err)
+		}
+	})
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
