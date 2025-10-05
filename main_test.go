@@ -95,12 +95,17 @@ func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
 			"keyring":                               filepath.Join(tmpDir, "keyring"),
 			"log_to_file":                           "false",
 			"log_to_stderr":                         "true",
+			"osd_pool_default_size":                 "1",
+			"osd_pool_default_min_size":             "1",
+			"osd_crush_chooseleaf_type":             "0",
+			"mon_allow_pool_size_one":               "true",
 		},
 		"mon": {
 			"mon_initial_members":       "mon1",
 			"mon_data":                  filepath.Join(tmpDir, "mon", "ceph-$id"),
 			"mon_cluster_log_to_file":   "false",
 			"mon_cluster_log_to_stderr": "true",
+			"mon_allow_pool_delete":     "true",
 		},
 		"osd": {
 			"osd_data":        filepath.Join(tmpDir, "osd", "ceph-$id"),
@@ -324,7 +329,8 @@ func createCephPool(ctx context.Context, confPath string) (string, error) {
 		return "", err
 	}
 	name := "test-" + hex.EncodeToString(bytes)
-	cmd := exec.CommandContext(ctx, "ceph", "--conf", confPath, "osd", "pool", "create", name, "8")
+
+	cmd := exec.CommandContext(ctx, "ceph", "--conf", confPath, "osd", "pool", "create", name, "1")
 	err = cmd.Run()
 	if err != nil {
 		return "", err
