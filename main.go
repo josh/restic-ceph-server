@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -92,6 +93,71 @@ func main() {
 		case "GET":
 			if err := serveRadosObject(w, ioctx, "config", false); err != nil {
 				handleRadosError(w, r, "config", err)
+			}
+		case "POST":
+			if err := createRadosObject(w, r, ioctx, "config"); err != nil {
+				handleRadosError(w, r, "config", err)
+			}
+		case "DELETE":
+			if err := deleteRadosObject(w, ioctx, "config"); err != nil {
+				handleRadosError(w, r, "config", err)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	keyRegex := regexp.MustCompile(`^/keys/([0-9a-fA-F]+)$`)
+	handler.HandleFunc("/keys/", func(w http.ResponseWriter, r *http.Request) {
+		matches := keyRegex.FindStringSubmatch(r.URL.Path)
+		if matches == nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
+
+		keyID := matches[1]
+		objectName := "keys/" + keyID
+
+		poolName := os.Getenv("CEPH_POOL")
+		if poolName == "" {
+			fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+			http.NotFound(w, r)
+			return
+		}
+
+		conn, err := getCephConnection()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		ioctx, err := conn.OpenIOContext(poolName)
+		if err != nil {
+			if errors.Is(err, rados.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "failed to open IO context: %v\n", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer ioctx.Destroy()
+
+		switch r.Method {
+		case "GET":
+			if err := serveRadosObject(w, ioctx, objectName, false); err != nil {
+				handleRadosError(w, r, objectName, err)
+			}
+		case "POST":
+			if err := createRadosObject(w, r, ioctx, objectName); err != nil {
+				handleRadosError(w, r, objectName, err)
+			}
+		case "DELETE":
+			if err := deleteRadosObject(w, ioctx, objectName); err != nil {
+				handleRadosError(w, r, objectName, err)
 			}
 		default:
 			http.NotFound(w, r)
@@ -277,6 +343,45 @@ func serveRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object stri
 		remaining -= int64(n)
 	}
 
+	return nil
+}
+
+func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string) error {
+	data := make([]byte, 0, 4096)
+	buffer := make([]byte, 4096)
+
+	for {
+		n, err := r.Body.Read(buffer)
+		if n > 0 {
+			data = append(data, buffer[:n]...)
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("read request body: %w", err)
+		}
+	}
+
+	err := ioctx.WriteFull(object, data)
+	if err != nil {
+		return fmt.Errorf("write object %s: %w", object, err)
+	}
+
+	w.WriteHeader(http.StatusOK)
+	return nil
+}
+
+func deleteRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object string) error {
+	err := ioctx.Delete(object)
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			return errObjectNotFound
+		}
+		return fmt.Errorf("delete object %s: %w", object, err)
+	}
+
+	w.WriteHeader(http.StatusOK)
 	return nil
 }
 
