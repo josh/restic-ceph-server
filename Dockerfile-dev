@@ -1,0 +1,20 @@
+FROM ubuntu:25.10
+
+RUN apt-get update && apt-get install --yes \
+    build-essential \
+    bzip2 \
+    ceph \
+    curl \
+    golang-go \
+    librados-dev
+
+ADD ./scripts/install-restic.sh /tmp/install-restic.sh
+RUN /tmp/install-restic.sh /usr/local/bin && rm /tmp/install-restic.sh
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build
