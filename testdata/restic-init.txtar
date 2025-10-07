@@ -1,33 +1,27 @@
-! exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+cp stdout restic-init-stdout
+cp stderr restic-init-stderr
+
+stdin restic-init-stdout
+exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g'
 cmp stdout out.txt
 
-stdin stderr
+stdin restic-init-stderr
 exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g; s/[0-9]+\.[0-9]+(ms|s)/[DURATION]/g'
 cmp stdout err.txt
 
 -- out.txt --
+created restic repository [HEX] at rclone:
+
+Please note that knowledge of your password is required to access
+the repository. Losing your password means that your data is
+irrecoverably lost.
 -- err.txt --
 rclone: HEAD /config
 rclone: POST /?create=true
 rclone: HEAD /config
-rclone: GET /keys/
 rclone: GET /snapshots/
 rclone: POST /keys/[HEX]
-rclone: DELETE /keys/[HEX]
-Save(<key/[HEX]>) returned error, retrying after [DURATION]: <key/[HEX]> does not exist
-rclone: POST /keys/[HEX]
-rclone: DELETE /keys/[HEX]
-Save(<key/[HEX]>) returned error, retrying after [DURATION]: <key/[HEX]> does not exist
-rclone: POST /keys/[HEX]
-rclone: DELETE /keys/[HEX]
-Save(<key/[HEX]>) returned error, retrying after [DURATION]: <key/[HEX]> does not exist
-rclone: POST /keys/[HEX]
-rclone: DELETE /keys/[HEX]
-Save(<key/[HEX]>) returned error, retrying after [DURATION]: <key/[HEX]> does not exist
-rclone: POST /keys/[HEX]
-rclone: DELETE /keys/[HEX]
-Save(<key/[HEX]>) failed: <key/[HEX]> does not exist
-Fatal: create key in repository at rclone: failed: <key/[HEX]> does not exist
-
+rclone: POST /config
 -- password.txt --
 secret
