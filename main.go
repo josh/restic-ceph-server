@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -107,62 +109,11 @@ func main() {
 		}
 	})
 
-	keyRegex := regexp.MustCompile(`^/keys/([0-9a-fA-F]+)$`)
-	handler.HandleFunc("/keys/", func(w http.ResponseWriter, r *http.Request) {
-		matches := keyRegex.FindStringSubmatch(r.URL.Path)
-		if matches == nil {
-			http.NotFound(w, r)
-			return
-		}
-
-		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
-
-		keyID := matches[1]
-		objectName := "keys/" + keyID
-
-		poolName := os.Getenv("CEPH_POOL")
-		if poolName == "" {
-			fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
-			http.NotFound(w, r)
-			return
-		}
-
-		conn, err := getCephConnection()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		ioctx, err := conn.OpenIOContext(poolName)
-		if err != nil {
-			if errors.Is(err, rados.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			fmt.Fprintf(os.Stderr, "failed to open IO context: %v\n", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		defer ioctx.Destroy()
-
-		switch r.Method {
-		case "GET":
-			if err := serveRadosObject(w, ioctx, objectName, false); err != nil {
-				handleRadosError(w, r, objectName, err)
-			}
-		case "POST":
-			if err := createRadosObject(w, r, ioctx, objectName); err != nil {
-				handleRadosError(w, r, objectName, err)
-			}
-		case "DELETE":
-			if err := deleteRadosObject(w, ioctx, objectName); err != nil {
-				handleRadosError(w, r, objectName, err)
-			}
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	blobTypes := []string{"keys", "locks", "snapshots", "data", "index"}
+	for _, blobType := range blobTypes {
+		blobType := blobType
+		handler.HandleFunc("/"+blobType+"/", createBlobHandler(blobType))
+	}
 
 	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Restic sends a preflight /file-123 test request, ignore it
@@ -393,4 +344,138 @@ func handleRadosError(w http.ResponseWriter, r *http.Request, object string, err
 		fmt.Fprintf(os.Stderr, "failed to serve %s: %v\n", object, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
+}
+
+func createBlobHandler(blobType string) http.HandlerFunc {
+	blobRegex := regexp.MustCompile(`^/` + blobType + `/([0-9a-fA-F]+)$`)
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/"+blobType+"/" && r.Method == "GET" {
+			fmt.Fprintf(os.Stderr, "GET %v\n", r.URL)
+
+			poolName := os.Getenv("CEPH_POOL")
+			if poolName == "" {
+				fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+				http.NotFound(w, r)
+				return
+			}
+
+			conn, err := getCephConnection()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+
+			ioctx, err := conn.OpenIOContext(poolName)
+			if err != nil {
+				if errors.Is(err, rados.ErrNotFound) {
+					http.NotFound(w, r)
+					return
+				}
+				fmt.Fprintf(os.Stderr, "failed to open IO context: %v\n", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			defer ioctx.Destroy()
+
+			if err := listBlobs(w, ioctx, blobType); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to list %s: %v\n", blobType, err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+			return
+		}
+
+		matches := blobRegex.FindStringSubmatch(r.URL.Path)
+		if matches == nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
+
+		blobID := matches[1]
+		objectName := blobType + "/" + blobID
+
+		poolName := os.Getenv("CEPH_POOL")
+		if poolName == "" {
+			fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+			http.NotFound(w, r)
+			return
+		}
+
+		conn, err := getCephConnection()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		ioctx, err := conn.OpenIOContext(poolName)
+		if err != nil {
+			if errors.Is(err, rados.ErrNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "failed to open IO context: %v\n", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer ioctx.Destroy()
+
+		switch r.Method {
+		case "HEAD":
+			if err := serveRadosObject(w, ioctx, objectName, true); err != nil {
+				handleRadosError(w, r, objectName, err)
+			}
+		case "GET":
+			if err := serveRadosObject(w, ioctx, objectName, false); err != nil {
+				handleRadosError(w, r, objectName, err)
+			}
+		case "POST":
+			if err := createRadosObject(w, r, ioctx, objectName); err != nil {
+				handleRadosError(w, r, objectName, err)
+			}
+		case "DELETE":
+			if err := deleteRadosObject(w, ioctx, objectName); err != nil {
+				handleRadosError(w, r, objectName, err)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}
+}
+
+func listBlobs(w http.ResponseWriter, ioctx *rados.IOContext, blobType string) error {
+	iter, err := ioctx.Iter()
+	if err != nil {
+		return fmt.Errorf("create iterator: %w", err)
+	}
+	defer iter.Close()
+
+	prefix := blobType + "/"
+	var blobs []string
+	for iter.Next() {
+		objName := iter.Value()
+		if strings.HasPrefix(objName, prefix) {
+			blobID := strings.TrimPrefix(objName, prefix)
+			if blobID != "" && !strings.HasSuffix(blobID, ".keep") {
+				blobs = append(blobs, blobID)
+			}
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("iterate objects: %w", err)
+	}
+
+	data, err := json.Marshal(blobs)
+	if err != nil {
+		return fmt.Errorf("marshal JSON: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/vnd.x.restic.rest.v1")
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write(data)
+	return err
 }

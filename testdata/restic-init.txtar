@@ -10,6 +10,13 @@ stdin restic-init-stderr
 exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g; s/[0-9]+\.[0-9]+(ms|s)/[DURATION]/g'
 cmp stdout err.txt
 
+exec restic cat config --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+cp stdout restic-cat-config-stdout
+
+stdin restic-cat-config-stdout
+exec sed -E 's/[0-9a-f]{10,}/[HEX]/g'
+cmp stdout config.txt
+
 -- out.txt --
 created restic repository [HEX] at rclone:
 
@@ -20,8 +27,15 @@ irrecoverably lost.
 rclone: HEAD /config
 rclone: POST /?create=true
 rclone: HEAD /config
+rclone: GET /keys/
 rclone: GET /snapshots/
 rclone: POST /keys/[HEX]
 rclone: POST /config
 -- password.txt --
 secret
+-- config.txt --
+{
+  "version": 2,
+  "id": "[HEX]",
+  "chunker_polynomial": "[HEX]"
+}
