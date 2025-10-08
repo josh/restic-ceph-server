@@ -64,6 +64,7 @@ func TestScript(t *testing.T) {
 			}
 			env.Setenv("CEPH_CONF", confPath)
 			env.Setenv("CEPH_POOL", poolName)
+			env.Setenv("RESTIC_CACHE_DIR", filepath.Join(t.TempDir(), "restic-cache"))
 
 			return nil
 		},
