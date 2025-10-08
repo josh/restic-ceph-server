@@ -121,7 +121,7 @@ func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
 		"client.admin": {
 			"key":      "AQB5m89objcKIxAAda2ULz/l3NH+mv9XzKePHQ==",
 			"caps mon": "allow *",
-			"caps msd": "allow *",
+			"caps mds": "allow *",
 			"caps osd": "allow *",
 		},
 	}
