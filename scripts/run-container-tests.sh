@@ -7,11 +7,11 @@ set -o pipefail
 if command -v container >/dev/null 2>&1; then
 	set -o xtrace
 	container build --file Dockerfile-dev --tag restic-ceph-server:latest .
-	container run --interactive --tty --rm --name restic-ceph-server restic-ceph-server:latest go test
+	container run --rm --name restic-ceph-server restic-ceph-server:latest go test
 elif command -v docker >/dev/null 2>&1; then
 	set -o xtrace
 	docker build --file Dockerfile-dev --tag restic-ceph-server:latest .
-	docker run --interactive --tty --rm --name restic-ceph-server restic-ceph-server:latest go test
+	docker run --rm --name restic-ceph-server restic-ceph-server:latest go test
 else
 	echo "error: no container runtime available" >&2
 	exit 1
