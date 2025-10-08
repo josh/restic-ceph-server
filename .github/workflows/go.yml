@@ -36,5 +36,6 @@ jobs:
           go build
 
       - name: Test
+        timeout-minutes: 6
         run: |
           go test -v -timeout 5m
