@@ -92,7 +92,7 @@ func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
 			"auth_allow_insecure_global_id_reclaim": "true",
 			"pid_file":                              filepath.Join(tmpDir, "$type.$id.pid"),
 			"admin_socket":                          filepath.Join(tmpDir, "$name.$pid.asok"),
-			"keyring":                               filepath.Join(tmpDir, "keyring"),
+			"keyring":                               "/dev/null",
 			"log_to_file":                           "false",
 			"log_to_stderr":                         "true",
 			"osd_pool_default_size":                 "1",
@@ -113,19 +113,6 @@ func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
 		},
 	}
 
-	keyringConfig := map[string]map[string]string{
-		"mon.": {
-			"key":      "AQBDm89oNP7bAxAA6TgZ1toOkhDjUNEkRL18Gg==",
-			"caps mon": "allow *",
-		},
-		"client.admin": {
-			"key":      "AQB5m89objcKIxAAda2ULz/l3NH+mv9XzKePHQ==",
-			"caps mon": "allow *",
-			"caps mds": "allow *",
-			"caps osd": "allow *",
-		},
-	}
-
 	err := os.MkdirAll(filepath.Join(tmpDir, "mon"), 0o755)
 	if err != nil {
 		return confPath, err
@@ -138,12 +125,6 @@ func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
 
 	confContent := generateINIConfig(cephConfig)
 	err = os.WriteFile(confPath, []byte(confContent), 0o644)
-	if err != nil {
-		return confPath, err
-	}
-
-	keyringContent := generateINIConfig(keyringConfig)
-	err = os.WriteFile(filepath.Join(tmpDir, "keyring"), []byte(keyringContent), 0o644)
 	if err != nil {
 		return confPath, err
 	}
