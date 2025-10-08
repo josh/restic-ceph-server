@@ -18,39 +18,31 @@ import (
 	"github.com/rogpeppe/go-internal/testscript"
 )
 
-const timeoutGracePeriod = 2 * time.Second
-
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
 		"restic-ceph-server": main,
 	})
 }
 
+const timeoutGracePeriod = 2 * time.Second
+
 func TestScript(t *testing.T) {
 	ctx := t.Context()
 	var cancel context.CancelFunc
+
+	var deadline time.Time
 
 	if dl, ok := t.Deadline(); ok {
 		if time.Until(dl) <= timeoutGracePeriod {
 			t.Fatalf("not enough time")
 		}
-		ctx, cancel = context.WithDeadline(ctx, dl.Add(-timeoutGracePeriod))
+		deadline = dl.Add(-timeoutGracePeriod)
+		ctx, cancel = context.WithDeadline(ctx, deadline)
 		t.Cleanup(cancel)
 	}
 
-	confPath, err := setupCephDir(ctx, t.TempDir())
+	confPath, err := startCephCluster(t, ctx)
 	if err != nil {
-		t.Fatal(err)
-	}
-
-	readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer readyCancel()
-
-	if err := startCephMon(t, ctx, readyCtx, confPath); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := startCephOsd(t, ctx, readyCtx, confPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,13 +52,14 @@ func TestScript(t *testing.T) {
 		Dir:             "testdata",
 		ContinueOnError: true,
 		UpdateScripts:   updateScripts,
+		Deadline:        deadline,
 		Setup: func(env *testscript.Env) error {
 			poolName, err := createCephPool(ctx, confPath)
 			if err != nil {
 				return err
 			}
 
-			if deadline, ok := ctx.Deadline(); ok {
+			if !deadline.IsZero() {
 				env.Setenv("RESTIC_CEPH_SERVER_DEADLINE", deadline.Format(time.RFC3339))
 			}
 			env.Setenv("CEPH_CONF", confPath)
@@ -75,6 +68,28 @@ func TestScript(t *testing.T) {
 			return nil
 		},
 	})
+}
+
+func startCephCluster(t *testing.T, ctx context.Context) (string, error) {
+	t.Helper()
+
+	startupCtx, startupCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer startupCancel()
+
+	confPath, err := setupCephDir(startupCtx, t.TempDir())
+	if err != nil {
+		return "", err
+	}
+
+	if err := startCephMon(t, ctx, startupCtx, confPath); err != nil {
+		return "", err
+	}
+
+	if err := startCephOsd(t, ctx, startupCtx, confPath); err != nil {
+		return "", err
+	}
+
+	return confPath, nil
 }
 
 func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
@@ -182,7 +197,7 @@ func generateINIConfig(config map[string]map[string]string) string {
 	return result.String()
 }
 
-func startCephMon(t *testing.T, ctx context.Context, readyCtx context.Context, confPath string) error {
+func startCephMon(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string) error {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, "ceph-mon", "--conf", confPath, "--id", "mon1", "--foreground")
 
@@ -207,17 +222,17 @@ func startCephMon(t *testing.T, ctx context.Context, readyCtx context.Context, c
 
 	for {
 		select {
-		case <-readyCtx.Done():
-			return readyCtx.Err()
+		case <-startupCtx.Done():
+			return startupCtx.Err()
 		case <-ticker.C:
-			if status, err := checkCephStatus(readyCtx, confPath); err == nil && status.Monmap.NumMons > 0 {
+			if status, err := checkCephStatus(startupCtx, confPath); err == nil && status.Monmap.NumMons > 0 {
 				return nil
 			}
 		}
 	}
 }
 
-func startCephOsd(t *testing.T, ctx context.Context, readyCtx context.Context, confPath string) error {
+func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string) error {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--mkfs")
 	if testing.Verbose() {
@@ -252,38 +267,26 @@ func startCephOsd(t *testing.T, ctx context.Context, readyCtx context.Context, c
 
 	for {
 		select {
-		case <-readyCtx.Done():
-			return readyCtx.Err()
+		case <-startupCtx.Done():
+			return startupCtx.Err()
 		case <-ticker.C:
-			if status, err := checkCephStatus(readyCtx, confPath); err == nil {
-				if status.Osdmap.NumUpOsds > 0 {
-					return nil
-				}
+			if status, err := checkCephStatus(startupCtx, confPath); err == nil && status.Osdmap.NumUpOsds > 0 {
+				return nil
 			}
 		}
 	}
 }
 
 type cephStatus struct {
-	Fsid   string           `json:"fsid"`
-	Health cephHealth       `json:"health"`
 	Monmap cephStatusMonmap `json:"monmap"`
 	Osdmap cephStatusOsdmap `json:"osdmap"`
 }
 
-type cephHealth struct {
-	Status string `json:"status"`
-}
-
 type cephStatusMonmap struct {
-	Epoch   int `json:"epoch"`
 	NumMons int `json:"num_mons"`
 }
 
 type cephStatusOsdmap struct {
-	Epoch     int `json:"epoch"`
-	NumOsds   int `json:"num_osds"`
-	NumInOsds int `json:"num_in_osds"`
 	NumUpOsds int `json:"num_up_osds"`
 }
 
