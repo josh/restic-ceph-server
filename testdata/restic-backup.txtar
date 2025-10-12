@@ -1,0 +1,42 @@
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+
+exec restic backup $WORK --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+cp stdout restic-backup-stdout
+cp stderr restic-backup-stderr
+
+stdin restic-backup-stdout
+exec sed -E 's/snapshot [0-9A-Fa-f]{8,}/snapshot [HEX]/g; s/[0-9A-Fa-f]{10,}/[HEX]/g; s/[0-9]+\.[0-9]+ (KiB|MiB|GiB|B)/[SIZE]/g; s/[0-9]+ B/[SIZE]/g; s/[0-9]+:[0-9]+/[DURATION]/g'
+cmp stdout out.txt
+
+stdin restic-backup-stderr
+exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g'
+cmp stdout err.txt
+
+-- password.txt --
+secret
+-- out.txt --
+no parent snapshot found, will read all files
+
+Files:           3 new,     0 changed,     0 unmodified
+Dirs:            4 new,     0 changed,     0 unmodified
+Added to the repository: [SIZE] ([SIZE] stored)
+
+processed 3 files, [SIZE] in [DURATION]
+snapshot [HEX] saved
+-- err.txt --
+rclone: HEAD /config
+rclone: GET /keys/
+rclone: HEAD /keys/[HEX]
+rclone: GET /keys/[HEX]
+rclone: GET /config
+rclone: GET /locks/
+rclone: POST /locks/[HEX]
+rclone: GET /locks/
+rclone: HEAD /locks/[HEX]
+rclone: GET /snapshots/
+rclone: GET /index/
+rclone: POST /data/[HEX]
+rclone: POST /data/[HEX]
+rclone: POST /index/[HEX]
+rclone: POST /snapshots/[HEX]
+rclone: DELETE /locks/[HEX]
