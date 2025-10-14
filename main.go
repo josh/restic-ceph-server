@@ -89,11 +89,11 @@ func main() {
 
 		switch r.Method {
 		case "HEAD":
-			if err := serveRadosObject(w, ioctx, "config", true); err != nil {
+			if err := serveRadosObjectWithRequest(w, r, ioctx, "config", true); err != nil {
 				handleRadosError(w, r, "config", err)
 			}
 		case "GET":
-			if err := serveRadosObject(w, ioctx, "config", false); err != nil {
+			if err := serveRadosObjectWithRequest(w, r, ioctx, "config", false); err != nil {
 				handleRadosError(w, r, "config", err)
 			}
 		case "POST":
@@ -244,6 +244,10 @@ func setupCephConn() (*rados.Conn, error) {
 const radosReadChunkSize = 32 * 1024
 
 func serveRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object string, head bool) error {
+	return serveRadosObjectWithRequest(w, nil, ioctx, object, head)
+}
+
+func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string, head bool) error {
 	stat, err := ioctx.Stat(object)
 	if err != nil {
 		if errors.Is(err, rados.ErrNotFound) {
@@ -257,17 +261,102 @@ func serveRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object stri
 	}
 
 	size := int64(stat.Size)
+	start := int64(0)
+	end := size - 1
+	status := http.StatusOK
 
-	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
-	w.WriteHeader(http.StatusOK)
+	rangeHeader := ""
+	if r != nil {
+		rangeHeader = r.Header.Get("Range")
+	}
 
-	if head || size == 0 {
+	if rangeHeader != "" {
+		var rangeStart, rangeEnd int64
+
+		if !strings.HasPrefix(rangeHeader, "bytes=") {
+			http.Error(w, "only bytes ranges are supported", http.StatusRequestedRangeNotSatisfiable)
+			return fmt.Errorf("unsupported range unit in: %s", rangeHeader)
+		}
+
+		rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
+
+		if strings.Contains(rangeSpec, ",") {
+			http.Error(w, "multiple ranges not supported", http.StatusRequestedRangeNotSatisfiable)
+			return fmt.Errorf("multiple ranges not supported: %s", rangeHeader)
+		}
+
+		parts := strings.Split(rangeSpec, "-")
+		if len(parts) != 2 {
+			http.Error(w, "invalid range format", http.StatusRequestedRangeNotSatisfiable)
+			return fmt.Errorf("invalid range format: %s", rangeHeader)
+		}
+
+		if parts[0] == "" && parts[1] == "" {
+			http.Error(w, "invalid range format", http.StatusRequestedRangeNotSatisfiable)
+			return fmt.Errorf("empty range spec: %s", rangeHeader)
+		}
+
+		if parts[0] == "" {
+			suffixLength, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil || suffixLength < 0 {
+				http.Error(w, "invalid suffix length", http.StatusRequestedRangeNotSatisfiable)
+				return fmt.Errorf("invalid suffix length in range: %s", rangeHeader)
+			}
+			if suffixLength >= size {
+				start = 0
+			} else {
+				start = size - suffixLength
+			}
+			end = size - 1
+		} else {
+			rangeStart, err = strconv.ParseInt(parts[0], 10, 64)
+			if err != nil || rangeStart < 0 {
+				http.Error(w, "invalid range start", http.StatusRequestedRangeNotSatisfiable)
+				return fmt.Errorf("invalid range start: %w", err)
+			}
+
+			if rangeStart >= size {
+				http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+				return fmt.Errorf("range start %d out of bounds for size %d", rangeStart, size)
+			}
+
+			start = rangeStart
+
+			if parts[1] != "" {
+				rangeEnd, err = strconv.ParseInt(parts[1], 10, 64)
+				if err != nil || rangeEnd < 0 {
+					http.Error(w, "invalid range end", http.StatusRequestedRangeNotSatisfiable)
+					return fmt.Errorf("invalid range end: %w", err)
+				}
+				if rangeEnd >= size {
+					rangeEnd = size - 1
+				}
+				end = rangeEnd
+			} else {
+				end = size - 1
+			}
+
+			if start > end {
+				http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+				return fmt.Errorf("range start %d greater than end %d", start, end)
+			}
+		}
+
+		status = http.StatusPartialContent
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+	}
+
+	contentLength := end - start + 1
+	w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
+	w.WriteHeader(status)
+
+	if head || contentLength == 0 {
 		return nil
 	}
 
 	buffer := make([]byte, radosReadChunkSize)
-	remaining := size
-	var offset int64
+	remaining := contentLength
+	offset := start
 
 	for remaining > 0 {
 		chunkSize := len(buffer)
@@ -425,11 +514,11 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 
 		switch r.Method {
 		case "HEAD":
-			if err := serveRadosObject(w, ioctx, objectName, true); err != nil {
+			if err := serveRadosObjectWithRequest(w, r, ioctx, objectName, true); err != nil {
 				handleRadosError(w, r, objectName, err)
 			}
 		case "GET":
-			if err := serveRadosObject(w, ioctx, objectName, false); err != nil {
+			if err := serveRadosObjectWithRequest(w, r, ioctx, objectName, false); err != nil {
 				handleRadosError(w, r, objectName, err)
 			}
 		case "POST":
