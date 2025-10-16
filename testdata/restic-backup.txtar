@@ -24,19 +24,3 @@ Added to the repository: [SIZE] ([SIZE] stored)
 processed 3 files, [SIZE] in [DURATION]
 snapshot [HEX] saved
 -- err.txt --
-rclone: HEAD /config
-rclone: GET /keys/
-rclone: HEAD /keys/[HEX]
-rclone: GET /keys/[HEX]
-rclone: GET /config
-rclone: GET /locks/
-rclone: POST /locks/[HEX]
-rclone: GET /locks/
-rclone: HEAD /locks/[HEX]
-rclone: GET /snapshots/
-rclone: GET /index/
-rclone: POST /data/[HEX]
-rclone: POST /data/[HEX]
-rclone: POST /index/[HEX]
-rclone: POST /snapshots/[HEX]
-rclone: DELETE /locks/[HEX]

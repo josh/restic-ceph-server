@@ -12,15 +12,4 @@ cmp stdout err.txt
 secret
 -- out.txt --
 -- err.txt --
-rclone: HEAD /config
-rclone: GET /keys/
-rclone: HEAD /keys/[HEX]
-rclone: GET /keys/[HEX]
-rclone: GET /config
-rclone: GET /locks/
-rclone: POST /locks/[HEX]
-rclone: GET /locks/
-rclone: HEAD /locks/[HEX]
-rclone: GET /index/
-rclone: DELETE /locks/[HEX]
 Fatal: blob not found
