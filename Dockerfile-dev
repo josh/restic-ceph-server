@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install --yes \
     ceph \
     curl \
     golang-go \
+    jq \
     librados-dev
 
 ADD ./scripts/install-restic.sh /tmp/install-restic.sh
