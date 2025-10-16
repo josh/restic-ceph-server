@@ -60,7 +60,7 @@ func TestScript(t *testing.T) {
 			}
 
 			if !deadline.IsZero() {
-				env.Setenv("RESTIC_CEPH_SERVER_DEADLINE", deadline.Format(time.RFC3339))
+				env.Setenv("__RESTIC_CEPH_SERVER_DEADLINE", deadline.Format(time.RFC3339))
 			}
 			env.Setenv("CEPH_CONF", confPath)
 			env.Setenv("CEPH_POOL", poolName)
