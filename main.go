@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -29,6 +30,22 @@ var (
 
 var errObjectNotFound = errors.New("object not found")
 
+func initLogger() error {
+	log.SetOutput(os.Stderr)
+	log.SetFlags(0)
+
+	logFilePath := os.Getenv("__RESTIC_CEPH_SERVER_LOG_FILE")
+	if logFilePath != "" {
+		file, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to open log file %s: %w", logFilePath, err)
+		}
+		log.SetOutput(file)
+	}
+
+	return nil
+}
+
 type Config struct {
 	Deadline *time.Time
 }
@@ -50,27 +67,32 @@ func parseConfig() (Config, error) {
 }
 
 func main() {
+	if err := initLogger(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
 	config, err := parseConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		log.Printf("%v\n", err)
 		os.Exit(1)
 	}
 
 	handler := http.NewServeMux()
 
 	handler.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
+		log.Printf("%v %v\n", r.Method, r.URL)
 
 		poolName := os.Getenv("CEPH_POOL")
 		if poolName == "" {
-			fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+			log.Printf("CEPH_POOL environment variable not set\n")
 			http.NotFound(w, r)
 			return
 		}
 
 		conn, err := getCephConnection()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
+			log.Printf("failed to get Ceph connection: %v\n", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -81,7 +103,7 @@ func main() {
 				http.NotFound(w, r)
 				return
 			}
-			fmt.Fprintf(os.Stderr, "failed to open IO context: %v\n", err)
+			log.Printf("failed to open IO context: %v\n", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -116,32 +138,31 @@ func main() {
 	}
 
 	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Restic sends a preflight /file-123 test request, ignore it
 		fileTestRegex := regexp.MustCompile(`^/file-\d+$`)
 		if r.Method == "GET" && fileTestRegex.MatchString(r.URL.Path) {
 			http.NotFound(w, r)
 			return
 		}
 
-		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
+		log.Printf("%v %v\n", r.Method, r.URL)
 
 		poolName := os.Getenv("CEPH_POOL")
 		if poolName == "" {
-			fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+			log.Printf("CEPH_POOL environment variable not set\n")
 			http.NotFound(w, r)
 			return
 		}
 
 		conn, err := getCephConnection()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
+			log.Printf("failed to get Ceph connection: %v\n", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		_, err = conn.GetPoolByName(poolName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "pool check failed: pool '%s' does not exist: %v\n", poolName, err)
+			log.Printf("pool check failed: pool '%s' does not exist: %v\n", poolName, err)
 			http.NotFound(w, r)
 			return
 		}
@@ -149,7 +170,7 @@ func main() {
 		if r.Method == "POST" && r.URL.Path == "/" && r.URL.Query().Get("create") == "true" {
 			ioctx, err := conn.OpenIOContext(poolName)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "failed to open IO context: %v\n", err)
+				log.Printf("failed to open IO context: %v\n", err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -159,7 +180,7 @@ func main() {
 			for _, objType := range objectTypes {
 				err := ioctx.Create(objType+"/.keep", rados.CreateExclusive)
 				if err != nil && err != rados.ErrObjectExists {
-					fmt.Fprintf(os.Stderr, "failed to create object type directory %s: %v\n", objType, err)
+					log.Printf("failed to create object type directory %s: %v\n", objType, err)
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 					return
 				}
@@ -169,7 +190,7 @@ func main() {
 				dirName := fmt.Sprintf("data/%02x/.keep", i)
 				err := ioctx.Create(dirName, rados.CreateExclusive)
 				if err != nil && err != rados.ErrObjectExists {
-					fmt.Fprintf(os.Stderr, "failed to create data subdirectory %02x: %v\n", i, err)
+					log.Printf("failed to create data subdirectory %02x: %v\n", i, err)
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 					return
 				}
@@ -206,7 +227,7 @@ func main() {
 	})
 
 	if ctx.Err() == context.DeadlineExceeded {
-		fmt.Fprintf(os.Stderr, "Server terminated due to deadline\n")
+		log.Printf("Server terminated due to deadline\n")
 		os.Exit(1)
 	}
 }
@@ -426,7 +447,7 @@ func handleRadosError(w http.ResponseWriter, r *http.Request, object string, err
 	case errors.Is(err, errObjectNotFound):
 		http.NotFound(w, r)
 	default:
-		fmt.Fprintf(os.Stderr, "failed to serve %s: %v\n", object, err)
+		log.Printf("failed to serve %s: %v\n", object, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
@@ -436,18 +457,18 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/"+blobType+"/" && r.Method == "GET" {
-			fmt.Fprintf(os.Stderr, "GET %v\n", r.URL)
+			log.Printf("GET %v\n", r.URL)
 
 			poolName := os.Getenv("CEPH_POOL")
 			if poolName == "" {
-				fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+				log.Printf("CEPH_POOL environment variable not set\n")
 				http.NotFound(w, r)
 				return
 			}
 
 			conn, err := getCephConnection()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
+				log.Printf("failed to get Ceph connection: %v\n", err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -458,14 +479,14 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 					http.NotFound(w, r)
 					return
 				}
-				fmt.Fprintf(os.Stderr, "failed to open IO context: %v\n", err)
+				log.Printf("failed to open IO context: %v\n", err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
 			defer ioctx.Destroy()
 
 			if err := listBlobs(w, ioctx, blobType); err != nil {
-				fmt.Fprintf(os.Stderr, "failed to list %s: %v\n", blobType, err)
+				log.Printf("failed to list %s: %v\n", blobType, err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 			return
@@ -477,21 +498,21 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 			return
 		}
 
-		fmt.Fprintf(os.Stderr, "%v %v\n", r.Method, r.URL)
+		log.Printf("%v %v\n", r.Method, r.URL)
 
 		blobID := matches[1]
 		objectName := blobType + "/" + blobID
 
 		poolName := os.Getenv("CEPH_POOL")
 		if poolName == "" {
-			fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+			log.Printf("CEPH_POOL environment variable not set\n")
 			http.NotFound(w, r)
 			return
 		}
 
 		conn, err := getCephConnection()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to get Ceph connection: %v\n", err)
+			log.Printf("failed to get Ceph connection: %v\n", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -502,7 +523,7 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 				http.NotFound(w, r)
 				return
 			}
-			fmt.Fprintf(os.Stderr, "failed to open IO context: %v\n", err)
+			log.Printf("failed to open IO context: %v\n", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
