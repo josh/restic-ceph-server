@@ -1,0 +1,26 @@
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+
+! exec restic cat blob 0000000000000000000000000000000000000000000000000000000000000000 --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+cmp stdout out.txt
+
+cp stderr restic-cat-blob-stderr
+stdin restic-cat-blob-stderr
+exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g'
+cmp stdout err.txt
+
+-- password.txt --
+secret
+-- out.txt --
+-- err.txt --
+rclone: HEAD /config
+rclone: GET /keys/
+rclone: HEAD /keys/[HEX]
+rclone: GET /keys/[HEX]
+rclone: GET /config
+rclone: GET /locks/
+rclone: POST /locks/[HEX]
+rclone: GET /locks/
+rclone: HEAD /locks/[HEX]
+rclone: GET /index/
+rclone: DELETE /locks/[HEX]
+Fatal: blob not found
