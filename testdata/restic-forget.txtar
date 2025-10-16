@@ -1,0 +1,74 @@
+env TZ=UTC
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+
+exec mkdir $WORK/data
+exec touch $WORK/data/foo.txt
+
+exec restic backup --time '2025-01-01 10:00:00' $WORK/data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+exec restic backup --time '2025-01-01 11:00:00' $WORK/data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+exec restic backup --time '2025-01-01 12:00:00' $WORK/data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+
+exec restic snapshots --json --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+stdin stdout
+exec jq '[.[] | {time: .time, short_id: .short_id}]'
+stdin stdout
+exec sed -E 's/"[0-9a-f]{8,}"/"[HEX]"/g'
+cmp stdout snapshots-before.json
+
+exec restic forget --json --keep-last 1 --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+stdin stdout
+exec jq '.[0] | {keep: [.keep[] | {time: .time, short_id: .short_id}], remove: [.remove[] | {time: .time, short_id: .short_id}]}'
+stdin stdout
+exec sed -E 's/"[0-9a-f]{8,}"/"[HEX]"/g'
+cmp stdout forget-out.json
+
+exec restic snapshots --json --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+stdin stdout
+exec jq '[.[] | {time: .time, short_id: .short_id}]'
+stdin stdout
+exec sed -E 's/"[0-9a-f]{8,}"/"[HEX]"/g'
+cmp stdout snapshots-after.json
+
+-- password.txt --
+secret
+-- snapshots-before.json --
+[
+  {
+    "time": "2025-01-01T10:00:00Z",
+    "short_id": "[HEX]"
+  },
+  {
+    "time": "2025-01-01T11:00:00Z",
+    "short_id": "[HEX]"
+  },
+  {
+    "time": "2025-01-01T12:00:00Z",
+    "short_id": "[HEX]"
+  }
+]
+-- forget-out.json --
+{
+  "keep": [
+    {
+      "time": "2025-01-01T12:00:00Z",
+      "short_id": "[HEX]"
+    }
+  ],
+  "remove": [
+    {
+      "time": "2025-01-01T11:00:00Z",
+      "short_id": "[HEX]"
+    },
+    {
+      "time": "2025-01-01T10:00:00Z",
+      "short_id": "[HEX]"
+    }
+  ]
+}
+-- snapshots-after.json --
+[
+  {
+    "time": "2025-01-01T12:00:00Z",
+    "short_id": "[HEX]"
+  }
+]
