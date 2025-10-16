@@ -12,9 +12,6 @@ exec bash ./parse-blob-id.sh
 stdin stdout
 exec bash ./cat-blob.sh
 
-stdin stdout
-exec wc --bytes
-
 cmp stdout size.txt
 
 -- password.txt --
@@ -31,7 +28,7 @@ set -o errexit
 set -o pipefail
 
 read -r blob_id
-restic cat blob "$blob_id" --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+restic cat blob "$blob_id" --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt | wc --bytes
 -- generate-packs.sh --
 set -o errexit
 set -o pipefail
