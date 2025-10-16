@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +61,13 @@ func TestScript(t *testing.T) {
 				return err
 			}
 
+			logFile, err := touchServerLog(t, t.TempDir())
+			if err != nil {
+				return err
+			}
+			go tailServerLog(t, ctx, logFile)
+			env.Setenv("__RESTIC_CEPH_SERVER_LOG_FILE", logFile)
+
 			if !deadline.IsZero() {
 				env.Setenv("__RESTIC_CEPH_SERVER_DEADLINE", deadline.Format(time.RFC3339))
 			}
@@ -69,6 +78,57 @@ func TestScript(t *testing.T) {
 			return nil
 		},
 	})
+}
+
+func touchServerLog(t *testing.T, tmpDir string) (string, error) {
+	t.Helper()
+
+	logFile := filepath.Join(tmpDir, "server.log")
+
+	file, err := os.Create(logFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to create log file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("failed to close log file: %w", err)
+	}
+
+	return logFile, nil
+}
+
+func tailServerLog(t *testing.T, ctx context.Context, logFile string) {
+	t.Helper()
+
+	f, err := os.Open(logFile)
+	if err != nil {
+		t.Errorf("failed to open log file for reading: %v", err)
+		return
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for {
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					t.Errorf("failed to read from log file: %v", err)
+					return
+				}
+				line = strings.TrimSuffix(line, "\n")
+				t.Logf("[restic-ceph-server] %s", line)
+			}
+		}
+	}
 }
 
 func startCephCluster(t *testing.T, ctx context.Context) (string, error) {
