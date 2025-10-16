@@ -36,11 +36,11 @@ type Config struct {
 func parseConfig() (Config, error) {
 	var deadline *time.Time
 
-	if envDeadline := os.Getenv("RESTIC_CEPH_SERVER_DEADLINE"); envDeadline != "" {
+	if envDeadline := os.Getenv("__RESTIC_CEPH_SERVER_DEADLINE"); envDeadline != "" {
 		if parsed, err := time.Parse(time.RFC3339, envDeadline); err == nil {
 			deadline = &parsed
 		} else {
-			return Config{}, fmt.Errorf("invalid RESTIC_CEPH_SERVER_DEADLINE value: %s", envDeadline)
+			return Config{}, fmt.Errorf("invalid __RESTIC_CEPH_SERVER_DEADLINE value: %s", envDeadline)
 		}
 	}
 
