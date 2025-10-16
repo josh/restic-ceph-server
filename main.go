@@ -243,10 +243,6 @@ func setupCephConn() (*rados.Conn, error) {
 
 const radosReadChunkSize = 32 * 1024
 
-func serveRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object string, head bool) error {
-	return serveRadosObjectWithRequest(w, nil, ioctx, object, head)
-}
-
 func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string, head bool) error {
 	stat, err := ioctx.Stat(object)
 	if err != nil {
