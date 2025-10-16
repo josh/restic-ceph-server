@@ -1,0 +1,43 @@
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+exec bash generate-packs.sh
+
+exec restic backup files --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+exec restic list blobs --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+stdin stdout
+exec bash ./parse-blob-id.sh
+
+stdin stdout
+exec bash ./cat-blob.sh
+
+stdin stdout
+exec wc --bytes
+
+cmp stdout size.txt
+
+-- password.txt --
+secret
+-- size.txt --
+16384
+-- parse-blob-id.sh --
+set -o errexit
+set -o pipefail
+
+awk '$1 == "data" { count++; if (count == 2) { print $2; exit } }'
+-- cat-blob.sh --
+set -o errexit
+set -o pipefail
+
+read -r blob_id
+restic cat blob "$blob_id" --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+-- generate-packs.sh --
+set -o errexit
+set -o pipefail
+
+mkdir files
+
+for i in $(seq 0 31); do
+	head -c 16384 /dev/urandom >"files/file${i}.bin"
+done
