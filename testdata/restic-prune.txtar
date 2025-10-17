@@ -1,0 +1,53 @@
+env TZ=UTC
+env RESTIC_PROGRESS_FPS=0
+
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+exec bash prepare-first.sh data
+exec restic backup --time '2025-01-01 10:00:00' data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+exec bash prepare-second.sh data
+exec restic backup --time '2025-01-01 11:00:00' data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+exec bash prepare-third.sh data
+exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+exec restic prune --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+cp stdout prune-before.txt
+exec grep 'total prune:[[:space:]]*0 blobs / 0 B' prune-before.txt
+
+exec restic forget --json --keep-last 1 --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+stdin stdout
+exec jq '.[0] | {keep: (.keep | length), remove: (.remove | length)}'
+cmp stdout forget.json
+
+exec restic prune --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+cp stdout prune-after.txt
+exec grep '^total prune:' prune-after.txt
+exec grep 'total prune:.* KiB' prune-after.txt
+! exec grep 'total prune:[[:space:]]*0 blobs' prune-after.txt
+
+-- password.txt --
+secret
+-- prepare-first.sh --
+set -o errexit
+rm -rf "$1"
+mkdir "$1"
+head -c 16384 /dev/urandom >"$1/file-a.bin"
+head -c 16384 /dev/urandom >"$1/file-b.bin"
+-- prepare-second.sh --
+set -o errexit
+rm -rf "$1"
+mkdir "$1"
+head -c 16384 /dev/urandom >"$1/file-a.bin"
+head -c 16384 /dev/urandom >"$1/file-c.bin"
+-- prepare-third.sh --
+set -o errexit
+rm -rf "$1"
+mkdir "$1"
+head -c 16384 /dev/urandom >"$1/file-d.bin"
+-- forget.json --
+{
+  "keep": 1,
+  "remove": 2
+}
