@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +32,7 @@ var (
 
 var errObjectNotFound = errors.New("object not found")
 var errObjectExists = errors.New("object exists")
+var errHashMismatch = errors.New("hash mismatch")
 
 func initLogger() error {
 	log.SetOutput(os.Stderr)
@@ -436,6 +439,27 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 		return fmt.Errorf("write object %s: %w", object, err)
 	}
 
+	if object != "config" {
+		parts := strings.Split(object, "/")
+		expectedHash := parts[len(parts)-1]
+
+		readData := make([]byte, len(data))
+		_, err = ioctx.Read(object, readData, 0)
+		if err != nil {
+			return fmt.Errorf("read object %s after write: %w", object, err)
+		}
+
+		hash := sha256.Sum256(readData)
+		actualHash := hex.EncodeToString(hash[:])
+
+		if actualHash != expectedHash {
+			if err := ioctx.Delete(object); err != nil {
+				log.Printf("failed to delete object %s after hash mismatch: %v\n", object, err)
+			}
+			return errHashMismatch
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
@@ -460,6 +484,8 @@ func handleRadosError(w http.ResponseWriter, r *http.Request, object string, err
 		http.NotFound(w, r)
 	case errors.Is(err, errObjectExists):
 		http.Error(w, "object already exists", http.StatusForbidden)
+	case errors.Is(err, errHashMismatch):
+		http.Error(w, "hash mismatch", http.StatusBadRequest)
 	default:
 		log.Printf("failed to serve %s: %v\n", object, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
