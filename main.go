@@ -131,7 +131,7 @@ func main() {
 				handleRadosError(w, r, "config", err)
 			}
 		default:
-			http.NotFound(w, r)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 
@@ -587,7 +587,7 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 				handleRadosError(w, r, objectName, err)
 			}
 		default:
-			http.NotFound(w, r)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	}
 }
