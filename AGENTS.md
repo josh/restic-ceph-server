@@ -83,4 +83,4 @@ go build ./...
 
 ## Comments
 
-Keep comments concise. Only add them when they clarify non-obvious logic.
+Do not add inline comments to code. Code should be self-documenting through clear naming and structure.
