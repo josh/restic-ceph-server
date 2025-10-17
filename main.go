@@ -433,7 +433,8 @@ func deleteRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object str
 	err := ioctx.Delete(object)
 	if err != nil {
 		if errors.Is(err, rados.ErrNotFound) {
-			return errObjectNotFound
+			w.WriteHeader(http.StatusOK)
+			return nil
 		}
 		return fmt.Errorf("delete object %s: %w", object, err)
 	}
