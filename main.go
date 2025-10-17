@@ -33,6 +33,7 @@ var (
 var errObjectNotFound = errors.New("object not found")
 var errObjectExists = errors.New("object exists")
 var errHashMismatch = errors.New("hash mismatch")
+var errWriteVerification = errors.New("write verification failed")
 
 func initLogger() error {
 	log.SetOutput(os.Stderr)
@@ -268,6 +269,24 @@ func setupCephConn() (*rados.Conn, error) {
 
 const radosReadChunkSize = 32 * 1024
 
+func expectedHash(object string) ([32]byte, error) {
+	if object == "config" {
+		return [32]byte{}, nil
+	}
+	parts := strings.Split(object, "/")
+	hashStr := parts[len(parts)-1]
+
+	hashBytes, err := hex.DecodeString(hashStr)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("invalid hash format: %w", err)
+	}
+	if len(hashBytes) != 32 {
+		return [32]byte{}, fmt.Errorf("invalid hash length: expected 32 bytes, got %d", len(hashBytes))
+	}
+
+	return [32]byte(hashBytes), nil
+}
+
 func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string, head bool) error {
 	stat, err := ioctx.Stat(object)
 	if err != nil {
@@ -424,6 +443,19 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 		}
 	}
 
+	expected, err := expectedHash(object)
+	if err != nil {
+		return err
+	}
+
+	if expected != [32]byte{} {
+		actual := sha256.Sum256(data)
+		if actual != expected {
+			log.Printf("input hash mismatch for %s: expected %x, got %x\n", object, expected, actual)
+			return errHashMismatch
+		}
+	}
+
 	writeOp := rados.CreateWriteOp()
 	defer writeOp.Release()
 
@@ -431,7 +463,7 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 	writeOp.SetAllocationHint(uint64(len(data)), uint64(len(data)), rados.AllocHintIncompressible|rados.AllocHintImmutable|rados.AllocHintLonglived)
 	writeOp.WriteFull(data)
 
-	err := writeOp.Operate(ioctx, object, rados.OperationNoFlag)
+	err = writeOp.Operate(ioctx, object, rados.OperationNoFlag)
 	if err != nil {
 		if errors.Is(err, rados.ErrObjectExists) {
 			return errObjectExists
@@ -439,24 +471,21 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 		return fmt.Errorf("write object %s: %w", object, err)
 	}
 
-	if object != "config" {
-		parts := strings.Split(object, "/")
-		expectedHash := parts[len(parts)-1]
-
+	if expected != [32]byte{} {
 		readData := make([]byte, len(data))
 		_, err = ioctx.Read(object, readData, 0)
 		if err != nil {
 			return fmt.Errorf("read object %s after write: %w", object, err)
 		}
 
-		hash := sha256.Sum256(readData)
-		actualHash := hex.EncodeToString(hash[:])
+		actual := sha256.Sum256(readData)
 
-		if actualHash != expectedHash {
+		if actual != expected {
 			if err := ioctx.Delete(object); err != nil {
-				log.Printf("failed to delete object %s after hash mismatch: %v\n", object, err)
+				log.Printf("failed to delete object %s after write verification failure: %v\n", object, err)
 			}
-			return errHashMismatch
+			log.Printf("write verification failed for %s: expected %x, got %x\n", object, expected, actual)
+			return errWriteVerification
 		}
 	}
 
@@ -486,6 +515,8 @@ func handleRadosError(w http.ResponseWriter, r *http.Request, object string, err
 		http.Error(w, "object already exists", http.StatusForbidden)
 	case errors.Is(err, errHashMismatch):
 		http.Error(w, "hash mismatch", http.StatusBadRequest)
+	case errors.Is(err, errWriteVerification):
+		http.Error(w, "write verification failed", http.StatusInternalServerError)
 	default:
 		log.Printf("failed to serve %s: %v\n", object, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
