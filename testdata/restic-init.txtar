@@ -1,14 +1,9 @@
-exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
-cp stdout restic-init-stdout
-cp stderr restic-init-stderr
-
-stdin restic-init-stdout
-exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g'
-cmp stdout out.txt
-
-stdin restic-init-stderr
-exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g; s/[0-9]+\.[0-9]+(ms|s)/[DURATION]/g'
-cmp stdout err.txt
+exec restic init --json --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+stdin stdout
+exec jq '{message_type: .message_type, id: .id}'
+stdin stdout
+exec sed -E 's/"[0-9a-f]{10,}"/"[HEX]"/g'
+cmp stdout out.json
 
 exec restic cat config --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
 cp stdout restic-cat-config-stdout
@@ -17,13 +12,11 @@ stdin restic-cat-config-stdout
 exec sed -E 's/[0-9a-f]{10,}/[HEX]/g'
 cmp stdout config.txt
 
--- out.txt --
-created restic repository [HEX] at rclone:
-
-Please note that knowledge of your password is required to access
-the repository. Losing your password means that your data is
-irrecoverably lost.
--- err.txt --
+-- out.json --
+{
+  "message_type": "initialized",
+  "id": "[HEX]"
+}
 -- password.txt --
 secret
 -- config.txt --
