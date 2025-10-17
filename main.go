@@ -29,6 +29,7 @@ var (
 )
 
 var errObjectNotFound = errors.New("object not found")
+var errObjectExists = errors.New("object exists")
 
 func initLogger() error {
 	log.SetOutput(os.Stderr)
@@ -420,8 +421,18 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 		}
 	}
 
-	err := ioctx.WriteFull(object, data)
+	writeOp := rados.CreateWriteOp()
+	defer writeOp.Release()
+
+	writeOp.Create(rados.CreateExclusive)
+	writeOp.SetAllocationHint(uint64(len(data)), uint64(len(data)), rados.AllocHintIncompressible|rados.AllocHintImmutable|rados.AllocHintLonglived)
+	writeOp.WriteFull(data)
+
+	err := writeOp.Operate(ioctx, object, rados.OperationNoFlag)
 	if err != nil {
+		if errors.Is(err, rados.ErrObjectExists) {
+			return errObjectExists
+		}
 		return fmt.Errorf("write object %s: %w", object, err)
 	}
 
@@ -447,6 +458,8 @@ func handleRadosError(w http.ResponseWriter, r *http.Request, object string, err
 	switch {
 	case errors.Is(err, errObjectNotFound):
 		http.NotFound(w, r)
+	case errors.Is(err, errObjectExists):
+		http.Error(w, "object already exists", http.StatusForbidden)
 	default:
 		log.Printf("failed to serve %s: %v\n", object, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
