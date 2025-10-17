@@ -1,0 +1,46 @@
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+exec bash generate-data.sh
+
+exec restic backup data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+
+exec restic check --json --read-data-subset=1/1 --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+stdin stdout
+exec jq --slurp --from-file expr.jq
+cmp stdout check.json
+
+-- password.txt --
+secret
+-- generate-data.sh --
+set -o errexit
+set -o pipefail
+
+mkdir data
+
+for i in $(seq 0 7); do
+	head -c 16384 /dev/urandom >"data/blob${i}.bin"
+done
+-- expr.jq --
+{
+  error_messages: (map(select(.message_type == "error")) | length),
+  summary: (
+    map(select(.message_type == "summary"))
+    | if length == 0 then error("missing summary message") else .[0] end
+    | {
+      num_errors,
+      broken_packs,
+      suggest_repair_index,
+      suggest_prune
+    }
+  )
+}
+-- check.json --
+{
+  "error_messages": 0,
+  "summary": {
+    "num_errors": 0,
+    "broken_packs": null,
+    "suggest_repair_index": false,
+    "suggest_prune": false
+  }
+}
