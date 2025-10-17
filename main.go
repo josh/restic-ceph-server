@@ -525,7 +525,7 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 			}
 			defer ioctx.Destroy()
 
-			if err := listBlobs(w, ioctx, blobType); err != nil {
+			if err := listBlobs(w, r, ioctx, blobType); err != nil {
 				log.Printf("failed to list %s: %v\n", blobType, err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
@@ -592,21 +592,42 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 	}
 }
 
-func listBlobs(w http.ResponseWriter, ioctx *rados.IOContext, blobType string) error {
+type blobInfo struct {
+	Name string `json:"name"`
+	Size uint64 `json:"size"`
+}
+
+func listBlobs(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, blobType string) error {
 	iter, err := ioctx.Iter()
 	if err != nil {
 		return fmt.Errorf("create iterator: %w", err)
 	}
 	defer iter.Close()
 
+	acceptHeader := r.Header.Get("Accept")
+	useV2 := strings.Contains(acceptHeader, "application/vnd.x.restic.rest.v2")
+
 	prefix := blobType + "/"
-	var blobs []string
+	var blobNames []string
+	var blobInfos []blobInfo
+
 	for iter.Next() {
 		objName := iter.Value()
 		if strings.HasPrefix(objName, prefix) {
 			blobID := strings.TrimPrefix(objName, prefix)
 			if blobID != "" && !strings.HasSuffix(blobID, ".keep") {
-				blobs = append(blobs, blobID)
+				if useV2 {
+					stat, err := ioctx.Stat(objName)
+					if err != nil {
+						return fmt.Errorf("stat %s: %w", objName, err)
+					}
+					blobInfos = append(blobInfos, blobInfo{
+						Name: blobID,
+						Size: stat.Size,
+					})
+				} else {
+					blobNames = append(blobNames, blobID)
+				}
 			}
 		}
 	}
@@ -615,12 +636,21 @@ func listBlobs(w http.ResponseWriter, ioctx *rados.IOContext, blobType string) e
 		return fmt.Errorf("iterate objects: %w", err)
 	}
 
-	data, err := json.Marshal(blobs)
-	if err != nil {
-		return fmt.Errorf("marshal JSON: %w", err)
+	var data []byte
+	if useV2 {
+		data, err = json.Marshal(blobInfos)
+		if err != nil {
+			return fmt.Errorf("marshal JSON: %w", err)
+		}
+		w.Header().Set("Content-Type", "application/vnd.x.restic.rest.v2")
+	} else {
+		data, err = json.Marshal(blobNames)
+		if err != nil {
+			return fmt.Errorf("marshal JSON: %w", err)
+		}
+		w.Header().Set("Content-Type", "application/vnd.x.restic.rest.v1")
 	}
 
-	w.Header().Set("Content-Type", "application/vnd.x.restic.rest.v1")
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(data)
 	return err
