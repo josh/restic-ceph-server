@@ -172,7 +172,17 @@ func main() {
 			return
 		}
 
-		if r.Method == "POST" && r.URL.Path == "/" && r.URL.Query().Get("create") == "true" {
+		if r.Method == "POST" && r.URL.Path == "/" {
+			createParam := r.URL.Query().Get("create")
+			if createParam == "" {
+				http.Error(w, "missing required query parameter: create", http.StatusBadRequest)
+				return
+			}
+			if createParam != "true" {
+				http.Error(w, "invalid value for create parameter: must be 'true'", http.StatusBadRequest)
+				return
+			}
+
 			ioctx, err := conn.OpenIOContext(poolName)
 			if err != nil {
 				log.Printf("failed to open IO context: %v\n", err)
