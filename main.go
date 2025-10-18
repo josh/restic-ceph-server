@@ -191,26 +191,6 @@ func main() {
 			}
 			defer ioctx.Destroy()
 
-			objectTypes := []string{"data", "index", "keys", "locks", "snapshots"}
-			for _, objType := range objectTypes {
-				err := ioctx.Create(objType+"/.keep", rados.CreateExclusive)
-				if err != nil && err != rados.ErrObjectExists {
-					log.Printf("failed to create object type directory %s: %v\n", objType, err)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
-					return
-				}
-			}
-
-			for i := 0; i < 256; i++ {
-				dirName := fmt.Sprintf("data/%02x/.keep", i)
-				err := ioctx.Create(dirName, rados.CreateExclusive)
-				if err != nil && err != rados.ErrObjectExists {
-					log.Printf("failed to create data subdirectory %02x: %v\n", i, err)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
-					return
-				}
-			}
-
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -656,7 +636,7 @@ func listBlobs(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, b
 		objName := iter.Value()
 		if strings.HasPrefix(objName, prefix) {
 			blobID := strings.TrimPrefix(objName, prefix)
-			if blobID != "" && !strings.HasSuffix(blobID, ".keep") {
+			if blobID != "" {
 				if useV2 {
 					stat, err := ioctx.Stat(objName)
 					if err != nil {
