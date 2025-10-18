@@ -7,11 +7,37 @@ stdin stdout
 exec sed -E 's/"[0-9a-f]{10,}"/"[HEX]"/g'
 cmp stdout out.json
 
+exec bash object-ns-count.sh
+cmp stdout ns-counts.txt
+
 -- password.txt --
 secret
+-- object-ns-count.sh --
+set -o errexit
+set -o pipefail
+
+echo -n "default: "
+rados --pool $CEPH_POOL ls | wc --lines | tr --delete ' '
+echo -n "data: "
+rados --pool $CEPH_POOL --namespace data ls | wc --lines | tr --delete ' '
+echo -n "index: "
+rados --pool $CEPH_POOL --namespace index ls | wc --lines | tr --delete ' '
+echo -n "keys: "
+rados --pool $CEPH_POOL --namespace keys ls | wc --lines | tr --delete ' '
+echo -n "locks: "
+rados --pool $CEPH_POOL --namespace locks ls | wc --lines | tr --delete ' '
+echo -n "snapshots: "
+rados --pool $CEPH_POOL --namespace snapshots ls | wc --lines | tr --delete ' '
+-- ns-counts.txt --
+default: 1
+data: 2
+index: 1
+keys: 1
+locks: 0
+snapshots: 1
 -- out.json --
 {
-  "files_new": 2,
+  "files_new": 4,
   "files_changed": 0,
   "files_unmodified": 0,
   "dirs_new": 4,

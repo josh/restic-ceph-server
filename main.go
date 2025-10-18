@@ -263,10 +263,8 @@ func expectedHash(object string) ([32]byte, error) {
 	if object == "config" {
 		return [32]byte{}, nil
 	}
-	parts := strings.Split(object, "/")
-	hashStr := parts[len(parts)-1]
 
-	hashBytes, err := hex.DecodeString(hashStr)
+	hashBytes, err := hex.DecodeString(object)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("invalid hash format: %w", err)
 	}
@@ -546,6 +544,8 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 			}
 			defer ioctx.Destroy()
 
+			ioctx.SetNamespace(blobType)
+
 			if err := listBlobs(w, r, ioctx, blobType); err != nil {
 				log.Printf("failed to list %s: %v\n", blobType, err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -562,7 +562,6 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 		log.Printf("%v %v\n", r.Method, r.URL)
 
 		blobID := matches[1]
-		objectName := blobType + "/" + blobID
 
 		poolName := os.Getenv("CEPH_POOL")
 		if poolName == "" {
@@ -590,22 +589,24 @@ func createBlobHandler(blobType string) http.HandlerFunc {
 		}
 		defer ioctx.Destroy()
 
+		ioctx.SetNamespace(blobType)
+
 		switch r.Method {
 		case "HEAD":
-			if err := serveRadosObjectWithRequest(w, r, ioctx, objectName, true); err != nil {
-				handleRadosError(w, r, objectName, err)
+			if err := serveRadosObjectWithRequest(w, r, ioctx, blobID, true); err != nil {
+				handleRadosError(w, r, blobID, err)
 			}
 		case "GET":
-			if err := serveRadosObjectWithRequest(w, r, ioctx, objectName, false); err != nil {
-				handleRadosError(w, r, objectName, err)
+			if err := serveRadosObjectWithRequest(w, r, ioctx, blobID, false); err != nil {
+				handleRadosError(w, r, blobID, err)
 			}
 		case "POST":
-			if err := createRadosObject(w, r, ioctx, objectName); err != nil {
-				handleRadosError(w, r, objectName, err)
+			if err := createRadosObject(w, r, ioctx, blobID); err != nil {
+				handleRadosError(w, r, blobID, err)
 			}
 		case "DELETE":
-			if err := deleteRadosObject(w, ioctx, objectName); err != nil {
-				handleRadosError(w, r, objectName, err)
+			if err := deleteRadosObject(w, ioctx, blobID); err != nil {
+				handleRadosError(w, r, blobID, err)
 			}
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -628,27 +629,23 @@ func listBlobs(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, b
 	acceptHeader := r.Header.Get("Accept")
 	useV2 := strings.Contains(acceptHeader, "application/vnd.x.restic.rest.v2")
 
-	prefix := blobType + "/"
 	var blobNames []string
 	var blobInfos []blobInfo
 
 	for iter.Next() {
-		objName := iter.Value()
-		if strings.HasPrefix(objName, prefix) {
-			blobID := strings.TrimPrefix(objName, prefix)
-			if blobID != "" {
-				if useV2 {
-					stat, err := ioctx.Stat(objName)
-					if err != nil {
-						return fmt.Errorf("stat %s: %w", objName, err)
-					}
-					blobInfos = append(blobInfos, blobInfo{
-						Name: blobID,
-						Size: stat.Size,
-					})
-				} else {
-					blobNames = append(blobNames, blobID)
+		blobID := iter.Value()
+		if blobID != "" {
+			if useV2 {
+				stat, err := ioctx.Stat(blobID)
+				if err != nil {
+					return fmt.Errorf("stat %s: %w", blobID, err)
 				}
+				blobInfos = append(blobInfos, blobInfo{
+					Name: blobID,
+					Size: stat.Size,
+				})
+			} else {
+				blobNames = append(blobNames, blobID)
 			}
 		}
 	}
