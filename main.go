@@ -30,10 +30,158 @@ var (
 	connErr   error
 )
 
-var errObjectNotFound = errors.New("object not found")
-var errObjectExists = errors.New("object exists")
-var errHashMismatch = errors.New("hash mismatch")
-var errWriteVerification = errors.New("write verification failed")
+var (
+	errObjectNotFound      = errors.New("object not found")
+	errObjectExists        = errors.New("object exists")
+	errHashMismatch        = errors.New("hash mismatch")
+	errWriteVerification   = errors.New("write verification failed")
+	hexBlobIDRegex         = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+)
+
+type Handler struct {
+	conn     *rados.Conn
+	poolName string
+}
+
+func (h *Handler) openIOContext() (*rados.IOContext, error) {
+	return h.conn.OpenIOContext(h.poolName)
+}
+
+func isValidBlobType(blobType string) bool {
+	switch blobType {
+	case "keys", "locks", "snapshots", "data", "index":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, object string, err error) {
+	switch {
+	case errors.Is(err, errObjectNotFound):
+		http.NotFound(w, r)
+	case errors.Is(err, errObjectExists):
+		http.Error(w, "object already exists", http.StatusForbidden)
+	case errors.Is(err, errHashMismatch):
+		http.Error(w, "hash mismatch", http.StatusBadRequest)
+	case errors.Is(err, errWriteVerification):
+		http.Error(w, "write verification failed", http.StatusInternalServerError)
+	default:
+		log.Printf("failed to serve %s: %v\n", object, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+func (h *Handler) checkConfig(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
+
+	if err := serveRadosObjectWithRequest(w, r, ioctx, "config", true); err != nil {
+		h.handleRadosError(w, r, "config", err)
+	}
+}
+
+func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
+
+	if err := serveRadosObjectWithRequest(w, r, ioctx, "config", false); err != nil {
+		h.handleRadosError(w, r, "config", err)
+	}
+}
+
+func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
+
+	if err := createRadosObject(w, r, ioctx, "config"); err != nil {
+		h.handleRadosError(w, r, "config", err)
+	}
+}
+
+func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
+
+	if err := deleteRadosObject(w, ioctx, "config"); err != nil {
+		h.handleRadosError(w, r, "config", err)
+	}
+}
+
+func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
+
+	_, err := h.conn.GetPoolByName(h.poolName)
+	if err != nil {
+		log.Printf("pool check failed: pool '%s' does not exist: %v\n", h.poolName, err)
+		http.NotFound(w, r)
+		return
+	}
+
+	createParam := r.URL.Query().Get("create")
+	if createParam == "" {
+		http.Error(w, "missing required query parameter: create", http.StatusBadRequest)
+		return
+	}
+	if createParam != "true" {
+		http.Error(w, "invalid value for create parameter: must be 'true'", http.StatusBadRequest)
+		return
+	}
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
+
+	w.WriteHeader(http.StatusOK)
+}
 
 func initLogger() error {
 	log.SetOutput(os.Stderr)
@@ -83,120 +231,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := http.NewServeMux()
-
-	handler.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%v %v\n", r.Method, r.URL)
-
-		poolName := os.Getenv("CEPH_POOL")
-		if poolName == "" {
-			log.Printf("CEPH_POOL environment variable not set\n")
-			http.NotFound(w, r)
-			return
-		}
-
-		conn, err := getCephConnection()
-		if err != nil {
-			log.Printf("failed to get Ceph connection: %v\n", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		ioctx, err := conn.OpenIOContext(poolName)
-		if err != nil {
-			if errors.Is(err, rados.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			log.Printf("failed to open IO context: %v\n", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		defer ioctx.Destroy()
-
-		switch r.Method {
-		case "HEAD":
-			if err := serveRadosObjectWithRequest(w, r, ioctx, "config", true); err != nil {
-				handleRadosError(w, r, "config", err)
-			}
-		case "GET":
-			if err := serveRadosObjectWithRequest(w, r, ioctx, "config", false); err != nil {
-				handleRadosError(w, r, "config", err)
-			}
-		case "POST":
-			if err := createRadosObject(w, r, ioctx, "config"); err != nil {
-				handleRadosError(w, r, "config", err)
-			}
-		case "DELETE":
-			if err := deleteRadosObject(w, ioctx, "config"); err != nil {
-				handleRadosError(w, r, "config", err)
-			}
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	blobTypes := []string{"keys", "locks", "snapshots", "data", "index"}
-	for _, blobType := range blobTypes {
-		blobType := blobType
-		handler.HandleFunc("/"+blobType+"/", createBlobHandler(blobType))
+	poolName := os.Getenv("CEPH_POOL")
+	if poolName == "" {
+		log.Printf("CEPH_POOL environment variable not set\n")
+		os.Exit(1)
 	}
 
-	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fileTestRegex := regexp.MustCompile(`^/file-\d+$`)
-		if r.Method == "GET" && fileTestRegex.MatchString(r.URL.Path) {
-			http.NotFound(w, r)
-			return
-		}
+	conn, err := getCephConnection()
+	if err != nil {
+		log.Printf("failed to get Ceph connection: %v\n", err)
+		os.Exit(1)
+	}
 
-		log.Printf("%v %v\n", r.Method, r.URL)
+	h := &Handler{
+		conn:     conn,
+		poolName: poolName,
+	}
 
-		poolName := os.Getenv("CEPH_POOL")
-		if poolName == "" {
-			log.Printf("CEPH_POOL environment variable not set\n")
-			http.NotFound(w, r)
-			return
-		}
+	mux := http.NewServeMux()
 
-		conn, err := getCephConnection()
-		if err != nil {
-			log.Printf("failed to get Ceph connection: %v\n", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
+	mux.HandleFunc("HEAD /config", h.checkConfig)
+	mux.HandleFunc("GET /config", h.getConfig)
+	mux.HandleFunc("POST /config", h.saveConfig)
+	mux.HandleFunc("DELETE /config", h.deleteConfig)
 
-		_, err = conn.GetPoolByName(poolName)
-		if err != nil {
-			log.Printf("pool check failed: pool '%s' does not exist: %v\n", poolName, err)
-			http.NotFound(w, r)
-			return
-		}
+	mux.HandleFunc("GET /{type}/", h.listBlobs)
+	mux.HandleFunc("HEAD /{type}/{id}", h.checkBlob)
+	mux.HandleFunc("GET /{type}/{id}", h.getBlob)
+	mux.HandleFunc("POST /{type}/{id}", h.saveBlob)
+	mux.HandleFunc("DELETE /{type}/{id}", h.deleteBlob)
 
-		if r.Method == "POST" && r.URL.Path == "/" {
-			createParam := r.URL.Query().Get("create")
-			if createParam == "" {
-				http.Error(w, "missing required query parameter: create", http.StatusBadRequest)
-				return
-			}
-			if createParam != "true" {
-				http.Error(w, "invalid value for create parameter: must be 'true'", http.StatusBadRequest)
-				return
-			}
-
-			ioctx, err := conn.OpenIOContext(poolName)
-			if err != nil {
-				log.Printf("failed to open IO context: %v\n", err)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			defer ioctx.Destroy()
-
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		http.NotFound(w, r)
-	})
+	mux.HandleFunc("POST /", h.createRepo)
 
 	ctx := context.Background()
 
@@ -218,7 +283,7 @@ func main() {
 
 	server.ServeConn(stdioConn, &http2.ServeConnOpts{
 		Context: ctx,
-		Handler: handler,
+		Handler: mux,
 	})
 
 	if ctx.Err() == context.DeadlineExceeded {
@@ -495,122 +560,168 @@ func deleteRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object str
 	return nil
 }
 
-func handleRadosError(w http.ResponseWriter, r *http.Request, object string, err error) {
-	switch {
-	case errors.Is(err, errObjectNotFound):
+func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
+	log.Printf("GET %v\n", r.URL)
+
+	blobType := r.PathValue("type")
+	if !isValidBlobType(blobType) {
 		http.NotFound(w, r)
-	case errors.Is(err, errObjectExists):
-		http.Error(w, "object already exists", http.StatusForbidden)
-	case errors.Is(err, errHashMismatch):
-		http.Error(w, "hash mismatch", http.StatusBadRequest)
-	case errors.Is(err, errWriteVerification):
-		http.Error(w, "write verification failed", http.StatusInternalServerError)
-	default:
-		log.Printf("failed to serve %s: %v\n", object, err)
+		return
+	}
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
+
+	ioctx.SetNamespace(blobType)
+
+	if err := listBlobsInContext(w, r, ioctx, blobType); err != nil {
+		log.Printf("failed to list %s: %v\n", blobType, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 
-func createBlobHandler(blobType string) http.HandlerFunc {
-	blobRegex := regexp.MustCompile(`^/` + blobType + `/([0-9a-fA-F]+)$`)
+func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
 
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/"+blobType+"/" && r.Method == "GET" {
-			log.Printf("GET %v\n", r.URL)
+	blobType := r.PathValue("type")
+	if !isValidBlobType(blobType) {
+		http.NotFound(w, r)
+		return
+	}
 
-			poolName := os.Getenv("CEPH_POOL")
-			if poolName == "" {
-				log.Printf("CEPH_POOL environment variable not set\n")
-				http.NotFound(w, r)
-				return
-			}
+	blobID := r.PathValue("id")
+	if !hexBlobIDRegex.MatchString(blobID) {
+		http.NotFound(w, r)
+		return
+	}
 
-			conn, err := getCephConnection()
-			if err != nil {
-				log.Printf("failed to get Ceph connection: %v\n", err)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-
-			ioctx, err := conn.OpenIOContext(poolName)
-			if err != nil {
-				if errors.Is(err, rados.ErrNotFound) {
-					http.NotFound(w, r)
-					return
-				}
-				log.Printf("failed to open IO context: %v\n", err)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			defer ioctx.Destroy()
-
-			ioctx.SetNamespace(blobType)
-
-			if err := listBlobs(w, r, ioctx, blobType); err != nil {
-				log.Printf("failed to list %s: %v\n", blobType, err)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-			}
-			return
-		}
-
-		matches := blobRegex.FindStringSubmatch(r.URL.Path)
-		if matches == nil {
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
 
-		log.Printf("%v %v\n", r.Method, r.URL)
+	ioctx.SetNamespace(blobType)
 
-		blobID := matches[1]
+	if err := serveRadosObjectWithRequest(w, r, ioctx, blobID, true); err != nil {
+		h.handleRadosError(w, r, blobID, err)
+	}
+}
 
-		poolName := os.Getenv("CEPH_POOL")
-		if poolName == "" {
-			log.Printf("CEPH_POOL environment variable not set\n")
+func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
+
+	blobType := r.PathValue("type")
+	if !isValidBlobType(blobType) {
+		http.NotFound(w, r)
+		return
+	}
+
+	blobID := r.PathValue("id")
+	if !hexBlobIDRegex.MatchString(blobID) {
+		http.NotFound(w, r)
+		return
+	}
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
 
-		conn, err := getCephConnection()
-		if err != nil {
-			log.Printf("failed to get Ceph connection: %v\n", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx.SetNamespace(blobType)
+
+	if err := serveRadosObjectWithRequest(w, r, ioctx, blobID, false); err != nil {
+		h.handleRadosError(w, r, blobID, err)
+	}
+}
+
+func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
+
+	blobType := r.PathValue("type")
+	if !isValidBlobType(blobType) {
+		http.NotFound(w, r)
+		return
+	}
+
+	blobID := r.PathValue("id")
+	if !hexBlobIDRegex.MatchString(blobID) {
+		http.NotFound(w, r)
+		return
+	}
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.NotFound(w, r)
 			return
 		}
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
 
-		ioctx, err := conn.OpenIOContext(poolName)
-		if err != nil {
-			if errors.Is(err, rados.ErrNotFound) {
-				http.NotFound(w, r)
-				return
-			}
-			log.Printf("failed to open IO context: %v\n", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx.SetNamespace(blobType)
+
+	if err := createRadosObject(w, r, ioctx, blobID); err != nil {
+		h.handleRadosError(w, r, blobID, err)
+	}
+}
+
+func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v %v\n", r.Method, r.URL)
+
+	blobType := r.PathValue("type")
+	if !isValidBlobType(blobType) {
+		http.NotFound(w, r)
+		return
+	}
+
+	blobID := r.PathValue("id")
+	if !hexBlobIDRegex.MatchString(blobID) {
+		http.NotFound(w, r)
+		return
+	}
+
+	ioctx, err := h.openIOContext()
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.NotFound(w, r)
 			return
 		}
-		defer ioctx.Destroy()
+		log.Printf("failed to open IO context: %v\n", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer ioctx.Destroy()
 
-		ioctx.SetNamespace(blobType)
+	ioctx.SetNamespace(blobType)
 
-		switch r.Method {
-		case "HEAD":
-			if err := serveRadosObjectWithRequest(w, r, ioctx, blobID, true); err != nil {
-				handleRadosError(w, r, blobID, err)
-			}
-		case "GET":
-			if err := serveRadosObjectWithRequest(w, r, ioctx, blobID, false); err != nil {
-				handleRadosError(w, r, blobID, err)
-			}
-		case "POST":
-			if err := createRadosObject(w, r, ioctx, blobID); err != nil {
-				handleRadosError(w, r, blobID, err)
-			}
-		case "DELETE":
-			if err := deleteRadosObject(w, ioctx, blobID); err != nil {
-				handleRadosError(w, r, blobID, err)
-			}
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
+	if err := deleteRadosObject(w, ioctx, blobID); err != nil {
+		h.handleRadosError(w, r, blobID, err)
 	}
 }
 
@@ -619,7 +730,7 @@ type blobInfo struct {
 	Size uint64 `json:"size"`
 }
 
-func listBlobs(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, blobType string) error {
+func listBlobsInContext(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, blobType string) error {
 	iter, err := ioctx.Iter()
 	if err != nil {
 		return fmt.Errorf("create iterator: %w", err)
