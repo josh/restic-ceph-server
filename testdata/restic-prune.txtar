@@ -12,6 +12,9 @@ exec restic backup --time '2025-01-01 11:00:00' data --option rclone.program=res
 exec bash prepare-third.sh data
 exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
+exec bash data-count.sh
+cmp stdout data-before.txt
+
 exec restic prune --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 cp stdout prune-before.txt
 exec grep 'total prune:[[:space:]]*0 blobs / 0 B' prune-before.txt
@@ -27,8 +30,17 @@ exec grep '^total prune:' prune-after.txt
 exec grep 'total prune:.* KiB' prune-after.txt
 ! exec grep 'total prune:[[:space:]]*0 blobs' prune-after.txt
 
+exec bash data-count.sh
+cmp stdout data-after.txt
+
 -- password.txt --
 secret
+-- data-count.sh --
+rados --pool $CEPH_POOL --namespace data ls | wc --lines
+-- data-before.txt --
+6
+-- data-after.txt --
+2
 -- prepare-first.sh --
 set -o errexit
 rm -rf "$1"
