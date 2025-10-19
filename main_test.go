@@ -104,7 +104,11 @@ func tailServerLog(t *testing.T, ctx context.Context, logFile string) {
 		t.Errorf("failed to open log file for reading: %v", err)
 		return
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("failed to close log file: %v", err)
+		}
+	}()
 
 	reader := bufio.NewReader(f)
 	ticker := time.NewTicker(100 * time.Millisecond)
