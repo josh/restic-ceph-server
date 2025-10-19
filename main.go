@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -28,6 +29,10 @@ var (
 	radosConn *rados.Conn
 	connOnce  sync.Once
 	connErr   error
+)
+
+var (
+	verboseLog *log.Logger
 )
 
 var (
@@ -73,7 +78,7 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 }
 
 func (h *Handler) checkConfig(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	ioctx, err := h.openIOContext()
 	if err != nil {
@@ -93,7 +98,7 @@ func (h *Handler) checkConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	ioctx, err := h.openIOContext()
 	if err != nil {
@@ -113,7 +118,7 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	ioctx, err := h.openIOContext()
 	if err != nil {
@@ -133,7 +138,7 @@ func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	ioctx, err := h.openIOContext()
 	if err != nil {
@@ -153,7 +158,7 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	_, err := h.conn.GetPoolByName(h.poolName)
 	if err != nil {
@@ -183,9 +188,8 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func initLogger() error {
-	log.SetOutput(os.Stderr)
-	log.SetFlags(0)
+func initLogger(verbose bool) error {
+	logOutput := io.Writer(os.Stderr)
 
 	logFilePath := os.Getenv("__RESTIC_CEPH_SERVER_LOG_FILE")
 	if logFilePath != "" {
@@ -193,7 +197,16 @@ func initLogger() error {
 		if err != nil {
 			return fmt.Errorf("failed to open log file %s: %w", logFilePath, err)
 		}
-		log.SetOutput(file)
+		logOutput = file
+	}
+
+	log.SetOutput(logOutput)
+	log.SetFlags(0)
+
+	if verbose {
+		verboseLog = log.New(logOutput, "", 0)
+	} else {
+		verboseLog = log.New(io.Discard, "", 0)
 	}
 
 	return nil
@@ -220,7 +233,17 @@ func parseConfig() (Config, error) {
 }
 
 func main() {
-	if err := initLogger(); err != nil {
+	var verbose bool
+	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
+	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
+	flag.Parse()
+
+	if !verbose {
+		envVerbose := os.Getenv("__RESTIC_CEPH_VERBOSE")
+		verbose = envVerbose == "1" || strings.EqualFold(envVerbose, "true") || strings.EqualFold(envVerbose, "yes")
+	}
+
+	if err := initLogger(verbose); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
@@ -561,7 +584,7 @@ func deleteRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object str
 }
 
 func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
-	log.Printf("GET %v\n", r.URL)
+	verboseLog.Printf("GET %v\n", r.URL)
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
@@ -590,7 +613,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
@@ -624,7 +647,7 @@ func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
@@ -658,7 +681,7 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
@@ -692,7 +715,7 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v %v\n", r.Method, r.URL)
+	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {

@@ -67,6 +67,7 @@ func TestScript(t *testing.T) {
 			}
 			go tailServerLog(t, ctx, logFile)
 			env.Setenv("__RESTIC_CEPH_SERVER_LOG_FILE", logFile)
+			env.Setenv("__RESTIC_CEPH_VERBOSE", "1")
 
 			if !deadline.IsZero() {
 				env.Setenv("__RESTIC_CEPH_SERVER_DEADLINE", deadline.Format(time.RFC3339))
