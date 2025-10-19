@@ -4,8 +4,8 @@ exec restic backup data-original --option rclone.program=restic-ceph-server --op
 
 exec restic restore latest --target $WORK/data-restored --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
 
-cmp data-original/foo.txt $WORK/data-restored/data-original/foo.txt
-cmp data-original/subdir/bar.txt $WORK/data-restored/data-original/subdir/bar.txt
+cmp $WORK/data-restored/data-original/foo.txt data-original/foo.txt
+cmp $WORK/data-restored/data-original/subdir/bar.txt data-original/subdir/bar.txt
 
 -- password.txt --
 secret
