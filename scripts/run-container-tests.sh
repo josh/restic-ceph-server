@@ -28,4 +28,4 @@ mkdir ./tmp
 
 set -o xtrace
 $CONTAINER_RUNTIME build --file Dockerfile-dev --tag restic-ceph-server:latest .
-$CONTAINER_RUNTIME run --rm --name restic-ceph-server --env TF_ACC=1 --volume "$PWD/tmp:/tmp/host" restic-ceph-server:latest go test "$@"
+$CONTAINER_RUNTIME run --rm --name restic-ceph-server --volume "$PWD/tmp:/tmp/host" restic-ceph-server:latest go test "$@"
