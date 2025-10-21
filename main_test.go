@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,10 +45,17 @@ func TestScript(t *testing.T) {
 		t.Cleanup(cancel)
 	}
 
-	confPath, err := startCephCluster(t, ctx)
+	bufferedLog := &BufferedLog{target: os.Stderr}
+	confPath, err := startCephCluster(t, ctx, bufferedLog)
 	if err != nil {
+		t.Log("\n=== Ceph cluster setup logs ===")
+		if flushErr := bufferedLog.Flush(); flushErr != nil {
+			t.Logf("failed to flush setup log: %v", flushErr)
+		}
 		t.Fatal(err)
 	}
+
+	bufferedLog.EnableStream()
 
 	updateScripts, _ := strconv.ParseBool(os.Getenv("UPDATE_SCRIPTS"))
 
@@ -136,29 +145,29 @@ func tailServerLog(t *testing.T, ctx context.Context, logFile string) {
 	}
 }
 
-func startCephCluster(t *testing.T, ctx context.Context) (string, error) {
+func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string, error) {
 	t.Helper()
 
 	startupCtx, startupCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer startupCancel()
 
-	confPath, err := setupCephDir(startupCtx, t.TempDir())
+	confPath, err := setupCephDir(startupCtx, t.TempDir(), out)
 	if err != nil {
 		return "", err
 	}
 
-	if err := startCephMon(t, ctx, startupCtx, confPath); err != nil {
+	if err := startCephMon(t, ctx, startupCtx, confPath, out); err != nil {
 		return "", err
 	}
 
-	if err := startCephOsd(t, ctx, startupCtx, confPath); err != nil {
+	if err := startCephOsd(t, ctx, startupCtx, confPath, out); err != nil {
 		return "", err
 	}
 
 	return confPath, nil
 }
 
-func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
+func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, error) {
 	fsid := "6bb5784d-86b1-4b48-aff7-04d5dd22ef07"
 	confPath := filepath.Join(tmpDir, "ceph.conf")
 
@@ -212,16 +221,22 @@ func setupCephDir(ctx context.Context, tmpDir string) (string, error) {
 
 	monmapPath := filepath.Join(tmpDir, "monmap")
 	cmd := exec.CommandContext(ctx, "monmaptool", "--conf", confPath, monmapPath, "--create", "--fsid", fsid)
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
 		return confPath, fmt.Errorf("failed to create monitor map: %w", err)
 	}
 
 	cmd = exec.CommandContext(ctx, "monmaptool", "--conf", confPath, monmapPath, "--add", "mon1", "127.0.0.1:6789")
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
 		return confPath, fmt.Errorf("failed to add monitor to map: %w", err)
 	}
 
 	cmd = exec.CommandContext(ctx, "ceph-mon", "--conf", confPath, "--mkfs", "--id", "mon1", "--monmap", monmapPath)
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
 		return confPath, fmt.Errorf("failed to initialize monitor filesystem: %w", err)
 	}
@@ -263,14 +278,11 @@ func generateINIConfig(config map[string]map[string]string) string {
 	return result.String()
 }
 
-func startCephMon(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string) error {
+func startCephMon(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string, out io.Writer) error {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, "ceph-mon", "--conf", confPath, "--id", "mon1", "--foreground")
-
-	if testing.Verbose() {
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-	}
+	cmd.Stdout = out
+	cmd.Stderr = out
 
 	err := cmd.Start()
 	if err != nil {
@@ -298,13 +310,11 @@ func startCephMon(t *testing.T, ctx context.Context, startupCtx context.Context,
 	}
 }
 
-func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string) error {
+func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string, out io.Writer) error {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--mkfs")
-	if testing.Verbose() {
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-	}
+	cmd.Stdout = out
+	cmd.Stderr = out
 
 	err := cmd.Run()
 	if err != nil {
@@ -312,10 +322,8 @@ func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context,
 	}
 
 	cmd = exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--foreground")
-	if testing.Verbose() {
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-	}
+	cmd.Stdout = out
+	cmd.Stderr = out
 
 	err = cmd.Start()
 	if err != nil {
@@ -387,4 +395,39 @@ func createCephPool(ctx context.Context, confPath string) (string, error) {
 	}
 
 	return name, nil
+}
+
+type BufferedLog struct {
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	streaming bool
+	target    io.Writer
+}
+
+func (bl *BufferedLog) Write(p []byte) (n int, err error) {
+	bl.mu.Lock()
+	defer bl.mu.Unlock()
+
+	if bl.streaming {
+		return bl.target.Write(p)
+	}
+	return bl.buffer.Write(p)
+}
+
+func (bl *BufferedLog) EnableStream() {
+	bl.mu.Lock()
+	defer bl.mu.Unlock()
+	bl.streaming = true
+}
+
+func (bl *BufferedLog) Flush() error {
+	bl.mu.Lock()
+	defer bl.mu.Unlock()
+
+	if bl.buffer.Len() > 0 {
+		_, err := io.Copy(bl.target, &bl.buffer)
+		bl.buffer.Reset()
+		return err
+	}
+	return nil
 }
