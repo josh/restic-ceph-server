@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -234,8 +235,10 @@ func parseConfig() (Config, error) {
 
 func main() {
 	var verbose bool
+	var socketPath string
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
+	flag.StringVar(&socketPath, "socket", "", "Unix socket path to listen on")
 	flag.Parse()
 
 	if !verbose {
@@ -297,21 +300,67 @@ func main() {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	server := &http2.Server{}
+	if socketPath != "" {
+		if err := serveUnixSocket(ctx, socketPath, mux); err != nil {
+			log.Printf("socket server error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		server := &http2.Server{}
 
-	stdioConn := &StdioConn{
-		stdin:  os.Stdin,
-		stdout: os.Stdout,
+		stdioConn := &StdioConn{
+			stdin:  os.Stdin,
+			stdout: os.Stdout,
+		}
+
+		server.ServeConn(stdioConn, &http2.ServeConnOpts{
+			Context: ctx,
+			Handler: mux,
+		})
 	}
-
-	server.ServeConn(stdioConn, &http2.ServeConnOpts{
-		Context: ctx,
-		Handler: mux,
-	})
 
 	if ctx.Err() == context.DeadlineExceeded {
 		log.Printf("Server terminated due to deadline\n")
 		os.Exit(1)
+	}
+}
+
+func serveUnixSocket(ctx context.Context, socketPath string, handler http.Handler) error {
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove existing socket: %w", err)
+	}
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to create Unix socket listener: %w", err)
+	}
+	defer listener.Close()
+	defer os.Remove(socketPath)
+
+	server := &http.Server{
+		Handler: handler,
+	}
+
+	http2.ConfigureServer(server, &http2.Server{})
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- server.Serve(listener)
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("server shutdown error: %v\n", err)
+		}
+		return ctx.Err()
+	case err := <-errChan:
+		if err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
 	}
 }
 
