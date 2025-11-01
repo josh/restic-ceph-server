@@ -1,0 +1,32 @@
+exec restic-ceph-server --socket $WORK/restic.sock --addr 127.0.0.1:$PORT &server&
+exec bash wait-for-listeners.sh
+
+exec curl --silent --request POST http://127.0.0.1:$PORT/?create=true
+
+exec curl --silent --request POST --data-binary @blob-data http://127.0.0.1:$PORT/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a
+cmp stdout blob-data
+
+exec curl --silent --request GET http://127.0.0.1:$PORT/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a
+cmp stdout blob-data
+
+kill server
+
+-- wait-for-listeners.sh --
+set -o errexit
+set -o pipefail
+
+for i in {1..30}; do
+  if [ -S "$WORK/restic.sock" ] && \
+     curl --silent --max-time 0.1 http://127.0.0.1:$PORT >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 0.1
+done
+
+echo "Listeners did not appear in time" >&2
+exit 1
+
+-- blob-data --
+test blob content

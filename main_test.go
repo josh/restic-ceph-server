@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,9 +86,26 @@ func TestScript(t *testing.T) {
 			env.Setenv("CEPH_POOL", poolName)
 			env.Setenv("RESTIC_CACHE_DIR", filepath.Join(t.TempDir(), "restic-cache"))
 
+			port, err := getFreePort()
+			if err != nil {
+				return fmt.Errorf("failed to allocate PORT: %w", err)
+			}
+			env.Setenv("PORT", strconv.Itoa(port))
+
 			return nil
 		},
 	})
+}
+
+func getFreePort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = listener.Close() }()
+
+	addr := listener.Addr().(*net.TCPAddr)
+	return addr.Port, nil
 }
 
 func touchServerLog(t *testing.T, tmpDir string) (string, error) {
