@@ -23,6 +23,8 @@ import (
 	"github.com/rogpeppe/go-internal/testscript"
 )
 
+var cephDaemonLogs *LogDemux
+
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
 		"restic-ceph-server": main,
@@ -46,17 +48,21 @@ func TestScript(t *testing.T) {
 		t.Cleanup(cancel)
 	}
 
-	bufferedLog := &BufferedLog{target: os.Stderr}
-	confPath, err := startCephCluster(t, ctx, bufferedLog)
+	cephDaemonLogs = &LogDemux{}
+
+	var setupBuffer bytes.Buffer
+	detachSetup := cephDaemonLogs.Attach(&setupBuffer)
+	confPath, err := startCephCluster(t, ctx, cephDaemonLogs)
 	if err != nil {
+		detachSetup()
 		t.Log("\n=== Ceph cluster setup logs ===")
-		if flushErr := bufferedLog.Flush(); flushErr != nil {
-			t.Logf("failed to flush setup log: %v", flushErr)
-		}
+		_, _ = io.Copy(&TestWriter{t: t}, &setupBuffer)
 		t.Fatal(err)
 	}
+	detachSetup()
 
-	bufferedLog.EnableStream()
+	detach := cephDaemonLogs.AttachTest(t)
+	defer detach()
 
 	updateScripts, _ := strconv.ParseBool(os.Getenv("UPDATE_SCRIPTS"))
 
@@ -169,7 +175,8 @@ func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string,
 	startupCtx, startupCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer startupCancel()
 
-	confPath, err := setupCephDir(startupCtx, t.TempDir(), out)
+	tmpDir := t.TempDir()
+	confPath, err := setupCephDir(startupCtx, tmpDir, out)
 	if err != nil {
 		return "", err
 	}
@@ -415,37 +422,58 @@ func createCephPool(ctx context.Context, confPath string) (string, error) {
 	return name, nil
 }
 
-type BufferedLog struct {
-	mu        sync.Mutex
-	buffer    bytes.Buffer
-	streaming bool
-	target    io.Writer
+type TestWriter struct {
+	t *testing.T
 }
 
-func (bl *BufferedLog) Write(p []byte) (n int, err error) {
-	bl.mu.Lock()
-	defer bl.mu.Unlock()
-
-	if bl.streaming {
-		return bl.target.Write(p)
+func (tw *TestWriter) Write(p []byte) (n int, err error) {
+	tw.t.Helper()
+	lines := strings.Split(string(p), "\n")
+	for _, line := range lines {
+		if line != "" {
+			tw.t.Log(line)
+		}
 	}
-	return bl.buffer.Write(p)
+	return len(p), nil
 }
 
-func (bl *BufferedLog) EnableStream() {
-	bl.mu.Lock()
-	defer bl.mu.Unlock()
-	bl.streaming = true
+type LogDemux struct {
+	outs sync.Map
 }
 
-func (bl *BufferedLog) Flush() error {
-	bl.mu.Lock()
-	defer bl.mu.Unlock()
+func (ld *LogDemux) Write(p []byte) (n int, err error) {
+	var writeErr error
+	ld.outs.Range(func(key, _ interface{}) bool {
+		if writer, ok := key.(io.Writer); ok {
+			if written, err := writer.Write(p); err != nil {
+				writeErr = err
+				return false
+			} else if written != len(p) {
+				writeErr = fmt.Errorf("short write: expected %d, got %d", len(p), written)
+				return false
+			}
+		}
+		return true
+	})
 
-	if bl.buffer.Len() > 0 {
-		_, err := io.Copy(bl.target, &bl.buffer)
-		bl.buffer.Reset()
-		return err
+	if writeErr != nil {
+		return 0, writeErr
 	}
-	return nil
+	return len(p), nil
+}
+
+func (ld *LogDemux) Attach(writer io.Writer) func() {
+	ld.outs.Store(writer, struct{}{})
+	return func() {
+		ld.outs.Delete(writer)
+	}
+}
+
+func (ld *LogDemux) AttachTest(t *testing.T) func() {
+	t.Helper()
+	w := &TestWriter{t: t}
+	ld.outs.Store(w, struct{}{})
+	return func() {
+		ld.outs.Delete(w)
+	}
 }
