@@ -37,12 +37,23 @@ var (
 )
 
 var (
-	errObjectNotFound      = errors.New("object not found")
-	errObjectExists        = errors.New("object exists")
-	errHashMismatch        = errors.New("hash mismatch")
-	errWriteVerification   = errors.New("write verification failed")
-	hexBlobIDRegex         = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+	errObjectNotFound    = errors.New("object not found")
+	errObjectExists      = errors.New("object exists")
+	errHashMismatch      = errors.New("hash mismatch")
+	errWriteVerification = errors.New("write verification failed")
+	hexBlobIDRegex       = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 )
+
+type addrList []string
+
+func (a *addrList) String() string {
+	return strings.Join(*a, ",")
+}
+
+func (a *addrList) Set(value string) error {
+	*a = append(*a, value)
+	return nil
+}
 
 type Handler struct {
 	conn     *rados.Conn
@@ -236,14 +247,32 @@ func parseConfig() (Config, error) {
 func main() {
 	var verbose bool
 	var socketPath string
+	var addrs addrList
+	var useStdio bool
+	var shutdownTimeout time.Duration
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	flag.StringVar(&socketPath, "socket", "", "Unix socket path to listen on")
+	flag.Var(&addrs, "addr", "TCP address to listen on (host:port), repeatable for multiple interfaces")
+	flag.BoolVar(&useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
+	flag.DurationVar(&shutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful shutdown timeout for listeners")
 	flag.Parse()
 
 	if !verbose {
 		envVerbose := os.Getenv("__RESTIC_CEPH_VERBOSE")
 		verbose = envVerbose == "1" || strings.EqualFold(envVerbose, "true") || strings.EqualFold(envVerbose, "yes")
+	}
+
+	if useStdio && (socketPath != "" || len(addrs) > 0) {
+		log.Printf("Error: --stdio cannot be combined with --socket or --addr\n")
+		os.Exit(1)
+	}
+
+	for _, addr := range addrs {
+		if !strings.Contains(addr, ":") {
+			log.Printf("Error: invalid --addr format '%s': must specify port (e.g., :8080 or 127.0.0.1:8080)\n", addr)
+			os.Exit(1)
+		}
 	}
 
 	if err := initLogger(verbose); err != nil {
@@ -300,12 +329,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if socketPath != "" {
-		if err := serveUnixSocket(ctx, socketPath, mux); err != nil {
-			log.Printf("socket server error: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
+	hasListeners := socketPath != "" || len(addrs) > 0
+
+	if useStdio || !hasListeners {
 		server := &http2.Server{}
 
 		stdioConn := &StdioConn{
@@ -317,6 +343,47 @@ func main() {
 			Context: ctx,
 			Handler: mux,
 		})
+	} else {
+		var wg sync.WaitGroup
+		errChan := make(chan error, 1+len(addrs))
+
+		if socketPath != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				log.Printf("Listening on unix://%s\n", socketPath)
+				if err := serveUnixSocket(ctx, socketPath, mux, shutdownTimeout); err != nil && ctx.Err() == nil {
+					select {
+					case errChan <- fmt.Errorf("unix socket error: %w", err):
+					default:
+					}
+					cancel()
+				}
+			}()
+		}
+
+		for _, addr := range addrs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				log.Printf("Listening on %s\n", addr)
+				if err := serveTCPListener(ctx, addr, mux, shutdownTimeout); err != nil && ctx.Err() == nil {
+					select {
+					case errChan <- fmt.Errorf("TCP listener %s error: %w", addr, err):
+					default:
+					}
+					cancel()
+				}
+			}()
+		}
+
+		wg.Wait()
+		close(errChan)
+
+		if err := <-errChan; err != nil {
+			log.Printf("server error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if ctx.Err() == context.DeadlineExceeded {
@@ -325,7 +392,7 @@ func main() {
 	}
 }
 
-func serveUnixSocket(ctx context.Context, socketPath string, handler http.Handler) error {
+func serveUnixSocket(ctx context.Context, socketPath string, handler http.Handler, shutdownTimeout time.Duration) error {
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove existing socket: %w", err)
 	}
@@ -334,14 +401,14 @@ func serveUnixSocket(ctx context.Context, socketPath string, handler http.Handle
 	if err != nil {
 		return fmt.Errorf("failed to create Unix socket listener: %w", err)
 	}
-	defer listener.Close()
-	defer os.Remove(socketPath)
+	defer func() { _ = listener.Close() }()
+	defer func() { _ = os.Remove(socketPath) }()
 
 	server := &http.Server{
 		Handler: handler,
 	}
 
-	http2.ConfigureServer(server, &http2.Server{})
+	_ = http2.ConfigureServer(server, &http2.Server{})
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -350,7 +417,41 @@ func serveUnixSocket(ctx context.Context, socketPath string, handler http.Handle
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("server shutdown error: %v\n", err)
+		}
+		return ctx.Err()
+	case err := <-errChan:
+		if err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
+	}
+}
+
+func serveTCPListener(ctx context.Context, addr string, handler http.Handler, shutdownTimeout time.Duration) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to create TCP listener: %w", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	server := &http.Server{
+		Handler: handler,
+	}
+
+	_ = http2.ConfigureServer(server, &http2.Server{})
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- server.Serve(listener)
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer shutdownCancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("server shutdown error: %v\n", err)
