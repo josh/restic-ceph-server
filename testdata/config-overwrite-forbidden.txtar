@@ -1,0 +1,32 @@
+exec restic-ceph-server --socket $WORK/restic.sock &server&
+exec bash wait-for-socket.sh
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data-original http://localhost/config
+cmp stdout config-post-original.txt
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data-new http://localhost/config --output /dev/null
+stdout '403'
+
+kill server
+
+-- wait-for-socket.sh --
+set -o errexit
+set -o pipefail
+
+for i in {1..30}; do
+  if [ -S "$WORK/restic.sock" ]; then
+    exit 0
+  fi
+  sleep 0.1
+done
+
+echo "Socket did not appear in time" >&2
+exit 1
+
+-- config-data-original --
+{"version":2,"id":"original","chunker_polynomial":"original_polynomial"}
+-- config-post-original.txt --
+-- config-data-new --
+{"version":2,"id":"new","chunker_polynomial":"new_polynomial"}

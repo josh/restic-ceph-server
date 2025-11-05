@@ -682,6 +682,14 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 		}
 	}
 
+	_, err = ioctx.Stat(object)
+	if err == nil {
+		return errObjectExists
+	}
+	if !errors.Is(err, rados.ErrNotFound) {
+		return fmt.Errorf("stat object %s: %w", object, err)
+	}
+
 	writeOp := rados.CreateWriteOp()
 	defer writeOp.Release()
 
@@ -691,9 +699,6 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 
 	err = writeOp.Operate(ioctx, object, rados.OperationNoFlag)
 	if err != nil {
-		if errors.Is(err, rados.ErrObjectExists) {
-			return errObjectExists
-		}
 		return fmt.Errorf("write object %s: %w", object, err)
 	}
 
