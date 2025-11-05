@@ -1,5 +1,6 @@
 exec restic-ceph-server --socket $WORK/restic.sock --addr 127.0.0.1:$PORT &server&
-exec bash wait-for-listeners.sh
+exec wait4unix $WORK/restic.sock
+exec wait4inet 127.0.0.1:$PORT
 
 exec curl --silent --request POST http://127.0.0.1:$PORT/?create=true
 
@@ -12,21 +13,6 @@ exec curl --silent --request GET http://127.0.0.1:$PORT/data/abd9a2bf47af3416b04
 cmp stdout blob-data
 
 kill server
-
--- wait-for-listeners.sh --
-set -o errexit
-set -o pipefail
-
-for i in {1..30}; do
-  if [ -S "$WORK/restic.sock" ] && \
-     curl --silent --max-time 0.1 http://127.0.0.1:$PORT >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 0.1
-done
-
-echo "Listeners did not appear in time" >&2
-exit 1
 
 -- blob-data --
 test blob content
