@@ -45,6 +45,12 @@ The test suite uses [testscript](https://pkg.go.dev/github.com/rogpeppe/go-inter
 
 Set the environment variable `UPDATE_SCRIPTS=true` when running tests to enable automatic updates of testscript output files.
 
+To run an individual testscript file:
+
+```sh
+go test -run '^TestScript/foo'
+```
+
 ### Testscript Conventions
 
 - Scrub non-deterministic IDs, sizes, and durations with `sed` (or similar) before running `cmp` so golden files stay stable across runs.
