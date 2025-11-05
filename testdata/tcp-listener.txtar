@@ -1,5 +1,5 @@
 exec restic-ceph-server --addr 127.0.0.1:$PORT &server&
-exec bash wait-for-tcp.sh
+exec wait4inet 127.0.0.1:$PORT
 
 exec curl --silent --request POST http://127.0.0.1:$PORT/?create=true
 
@@ -13,20 +13,6 @@ stdout 'HTTP/.* 200'
 stdout 'Content-Length: 66'
 
 kill server
-
--- wait-for-tcp.sh --
-set -o errexit
-set -o pipefail
-
-for i in {1..30}; do
-  if curl --silent --max-time 0.1 http://127.0.0.1:$PORT >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 0.1
-done
-
-echo "TCP listener did not respond in time" >&2
-exit 1
 
 -- config-data --
 {"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
