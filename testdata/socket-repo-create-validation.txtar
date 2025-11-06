@@ -1,0 +1,45 @@
+exec restic-ceph-server --socket $WORK/restic.sock &server&
+exec wait4unix $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/' --output response1.txt
+stdout '400'
+exec cat response1.txt
+stdout 'missing required query parameter: create'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=false' --output response2.txt
+stdout '400'
+exec cat response2.txt
+stdout 'invalid value for create parameter'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=1' --output response3.txt
+stdout '400'
+exec cat response3.txt
+stdout 'invalid value for create parameter'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=True' --output response4.txt
+stdout '400'
+exec cat response4.txt
+stdout 'invalid value for create parameter'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=yes' --output response5.txt
+stdout '400'
+exec cat response5.txt
+stdout 'invalid value for create parameter'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=' --output response6.txt
+stdout '400'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @config-data 'http://localhost/config'
+exec curl --silent --unix-socket $WORK/restic.sock --request GET 'http://localhost/config'
+cmp stdout config-data
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
