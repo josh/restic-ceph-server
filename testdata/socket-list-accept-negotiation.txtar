@@ -1,0 +1,31 @@
+exec restic-ceph-server --socket $WORK/restic.sock &server&
+exec wait4unix $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-small 'http://localhost/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-large 'http://localhost/data/40b89de5ed0336c2ce8958fa5eb483bd74c9757643bab14451b8d6fa064f4702'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v1'
+stdout '"40b89de5ed0336c2ce8958fa5eb483bd74c9757643bab14451b8d6fa064f4702"'
+stdout '"f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: application/vnd.x.restic.rest.v2' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v2'
+stdout '"name":"f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"'
+stdout '"size":5'
+stdout '"name":"40b89de5ed0336c2ce8958fa5eb483bd74c9757643bab14451b8d6fa064f4702"'
+stdout '"size":17'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: text/html, application/vnd.x.restic.rest.v2, */*' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v2'
+stdout '"name":'
+stdout '"size":'
+
+kill server
+
+-- blob-small --
+test
+-- blob-large --
+larger test blob
