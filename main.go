@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -908,6 +909,32 @@ type blobInfo struct {
 	Size uint64 `json:"size"`
 }
 
+func prefersBlobListV2(r *http.Request) bool {
+	for _, value := range r.Header.Values("Accept") {
+		for _, mediaRange := range strings.Split(value, ",") {
+			mediaRange = strings.TrimSpace(mediaRange)
+			if mediaRange == "" {
+				continue
+			}
+			mediaType, params, err := mime.ParseMediaType(mediaRange)
+			if err != nil {
+				continue
+			}
+			if mediaType != "application/vnd.x.restic.rest.v2" {
+				continue
+			}
+			if qValue, ok := params["q"]; ok {
+				q, err := strconv.ParseFloat(qValue, 64)
+				if err == nil && q == 0 {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func listBlobsInContext(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, blobType string) error {
 	iter, err := ioctx.Iter()
 	if err != nil {
@@ -915,8 +942,7 @@ func listBlobsInContext(w http.ResponseWriter, r *http.Request, ioctx *rados.IOC
 	}
 	defer iter.Close()
 
-	acceptHeader := r.Header.Get("Accept")
-	useV2 := strings.Contains(acceptHeader, "application/vnd.x.restic.rest.v2")
+	useV2 := prefersBlobListV2(r)
 
 	var blobNames []string
 	var blobInfos []blobInfo
