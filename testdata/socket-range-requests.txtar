@@ -1,0 +1,50 @@
+exec restic-ceph-server --socket $WORK/restic.sock &server&
+exec wait4unix $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @test-blob 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=0-9' --include 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
+stdout 'HTTP/.* 206'
+stdout 'Content-Range: bytes 0-9/51'
+stdout 'Content-Length: 10'
+stdout '0123456789'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=10-19' 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
+stdout '^0123456789$'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=40-' --include 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
+stdout 'HTTP/.* 206'
+stdout 'Content-Range: bytes 40-50/51'
+stdout 'Content-Length: 11'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=-15' --include 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
+stdout 'HTTP/.* 206'
+stdout 'Content-Range: bytes 36-50/51'
+stdout 'Content-Length: 15'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=5-5' --include 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
+stdout 'HTTP/.* 206'
+stdout 'Content-Range: bytes 5-5/51'
+stdout 'Content-Length: 1'
+stdout '5'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=100-200' --write-out '%{http_code}' 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045' --output /dev/null
+stdout '416'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=30-20' --write-out '%{http_code}' 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045' --output /dev/null
+stdout '416'
+
+exec curl --silent --unix-socket $WORK/restic.sock --head --header 'Range: bytes=0-9' --include 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
+stdout 'HTTP/.* 206'
+stdout 'Content-Range: bytes 0-9/51'
+stdout 'Content-Length: 10'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=0-50' 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
+cmp stdout test-blob
+
+kill server
+
+-- test-blob --
+01234567890123456789012345678901234567890123456789
