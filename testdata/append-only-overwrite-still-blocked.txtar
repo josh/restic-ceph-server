@@ -1,5 +1,5 @@
 exec restic-ceph-server --append-only --socket $WORK/restic.sock &server&
-exec wait4unix $WORK/restic.sock
+exec wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
 

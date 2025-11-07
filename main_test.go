@@ -28,8 +28,7 @@ var cephDaemonLogs *LogDemux
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
 		"restic-ceph-server": main,
-		"wait4unix":          waitForUnix,
-		"wait4inet":          waitForInet,
+		"wait4socket":        waitForSocket,
 	})
 }
 
@@ -481,43 +480,46 @@ func (ld *LogDemux) AttachTest(t *testing.T) func() {
 	}
 }
 
-func waitForUnix() {
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "usage: wait4unix <socket-path>\n")
+func waitForSocket() {
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: wait4socket <endpoint> [<endpoint>...]\n")
 		os.Exit(1)
 	}
 
-	socketPath := os.Args[1]
+	endpoints := os.Args[1:]
 
-	for i := 0; i < 30; i++ {
-		info, err := os.Stat(socketPath)
-		if err == nil && info.Mode()&os.ModeSocket != 0 {
-			os.Exit(0)
+	for _, endpoint := range endpoints {
+		var success bool
+
+		if strings.Contains(endpoint, ":") {
+			for i := 0; i < 30; i++ {
+				conn, err := net.DialTimeout("tcp", endpoint, 100*time.Millisecond)
+				if err == nil {
+					_ = conn.Close()
+					success = true
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if !success {
+				fmt.Fprintf(os.Stderr, "TCP listener did not respond in time: %s\n", endpoint)
+				os.Exit(1)
+			}
+		} else {
+			for i := 0; i < 30; i++ {
+				info, err := os.Stat(endpoint)
+				if err == nil && info.Mode()&os.ModeSocket != 0 {
+					success = true
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if !success {
+				fmt.Fprintf(os.Stderr, "socket did not appear in time: %s\n", endpoint)
+				os.Exit(1)
+			}
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 
-	fmt.Fprintf(os.Stderr, "socket did not appear in time: %s\n", socketPath)
-	os.Exit(1)
-}
-
-func waitForInet() {
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "usage: wait4inet <addr>\n")
-		os.Exit(1)
-	}
-
-	addr := os.Args[1]
-
-	for i := 0; i < 30; i++ {
-		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			os.Exit(0)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	fmt.Fprintf(os.Stderr, "TCP listener did not respond in time: %s\n", addr)
-	os.Exit(1)
+	os.Exit(0)
 }
