@@ -193,7 +193,7 @@ func systemdListeners() ([]listenerConfig, error) {
 	return configs, nil
 }
 
-func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutdownTimeout time.Duration) error {
+func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutdownTimeout time.Duration, monitor *idleMonitor) error {
 	switch cfg.kind {
 	case listenerTypeStdio:
 		server := &http2.Server{}
@@ -220,14 +220,14 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 				_ = os.Remove(cfg.address)
 			}
 		}()
-		return serveListener(ctx, listener, handler, shutdownTimeout)
+		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
 	case listenerTypeTCP:
 		listener, err := net.Listen("tcp", cfg.address)
 		if err != nil {
 			return fmt.Errorf("failed to create TCP listener: %w", err)
 		}
 		defer func() { _ = listener.Close() }()
-		return serveListener(ctx, listener, handler, shutdownTimeout)
+		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
 	case listenerTypeSystemd:
 		if cfg.file == nil {
 			return fmt.Errorf("systemd listener %s unavailable", cfg.description())
@@ -240,13 +240,13 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 		defer func() {
 			_ = listener.Close()
 		}()
-		return serveListener(ctx, listener, handler, shutdownTimeout)
+		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
 	default:
 		return fmt.Errorf("unsupported listener type %s", cfg.kind)
 	}
 }
 
-func serveAllListeners(ctx context.Context, cancel context.CancelFunc, listeners []listenerConfig, handler http.Handler, shutdownTimeout time.Duration) error {
+func serveAllListeners(ctx context.Context, cancel context.CancelFunc, listeners []listenerConfig, handler http.Handler, shutdownTimeout time.Duration, monitor *idleMonitor) error {
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(listeners))
 
@@ -256,7 +256,7 @@ func serveAllListeners(ctx context.Context, cancel context.CancelFunc, listeners
 		go func() {
 			defer wg.Done()
 			log.Printf("Listening on %s\n", cfg.description())
-			if err := cfg.Serve(ctx, handler, shutdownTimeout); err != nil && ctx.Err() == nil {
+			if err := cfg.Serve(ctx, handler, shutdownTimeout, monitor); err != nil && ctx.Err() == nil {
 				select {
 				case errChan <- fmt.Errorf("listener %s error: %w", cfg.description(), err):
 				default:
@@ -275,9 +275,20 @@ func serveAllListeners(ctx context.Context, cancel context.CancelFunc, listeners
 	return nil
 }
 
-func serveListener(ctx context.Context, listener net.Listener, handler http.Handler, shutdownTimeout time.Duration) error {
+func serveListener(ctx context.Context, listener net.Listener, handler http.Handler, shutdownTimeout time.Duration, monitor *idleMonitor) error {
 	server := &http.Server{
 		Handler: handler,
+	}
+
+	if monitor != nil {
+		server.ConnState = func(conn net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateNew:
+				monitor.Incr()
+			case http.StateClosed, http.StateHijacked:
+				monitor.Decr()
+			}
+		}
 	}
 
 	_ = http2.ConfigureServer(server, &http2.Server{})

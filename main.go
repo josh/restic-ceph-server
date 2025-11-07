@@ -248,37 +248,32 @@ func initLogger(verbose bool) error {
 }
 
 type Config struct {
-	Deadline *time.Time
+	Verbose         bool
+	Listeners       listenerFlags
+	UseStdio        bool
+	ShutdownTimeout time.Duration
+	AppendOnly      bool
+	Deadline        *time.Time
+	MaxIdleTime     time.Duration
 }
 
 func parseConfig() (Config, error) {
-	var deadline *time.Time
-
-	if envDeadline := os.Getenv("__RESTIC_CEPH_SERVER_DEADLINE"); envDeadline != "" {
-		if parsed, err := time.Parse(time.RFC3339, envDeadline); err == nil {
-			deadline = &parsed
-		} else {
-			return Config{}, fmt.Errorf("invalid __RESTIC_CEPH_SERVER_DEADLINE value: %s", envDeadline)
-		}
-	}
-
-	return Config{
-		Deadline: deadline,
-	}, nil
-}
-
-func main() {
 	var verbose bool
 	var listeners listenerFlags
 	var useStdio bool
 	var shutdownTimeout time.Duration
 	var appendOnly bool
+	var deadlineStr string
+	var maxIdleTime time.Duration
+
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	flag.Var(&listeners, "listen", "Address or Unix socket path to listen on, repeatable")
 	flag.BoolVar(&useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
 	flag.DurationVar(&shutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful shutdown timeout for listeners")
 	flag.BoolVar(&appendOnly, "append-only", false, "enable append-only mode (delete allowed for locks only)")
+	flag.StringVar(&deadlineStr, "deadline", "", "exit at specific time (RFC3339 format, e.g., 2006-01-02T15:04:05Z)")
+	flag.DurationVar(&maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
 	flag.Parse()
 
 	if !verbose {
@@ -286,14 +281,41 @@ func main() {
 		verbose = envVerbose == "1" || strings.EqualFold(envVerbose, "true") || strings.EqualFold(envVerbose, "yes")
 	}
 
-	if err := initLogger(verbose); err != nil {
+	var deadline *time.Time
+	if deadlineStr != "" {
+		parsed, err := time.Parse(time.RFC3339, deadlineStr)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid --deadline value: %w", err)
+		}
+		deadline = &parsed
+	} else if envDeadline := os.Getenv("__RESTIC_CEPH_SERVER_DEADLINE"); envDeadline != "" {
+		parsed, err := time.Parse(time.RFC3339, envDeadline)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid __RESTIC_CEPH_SERVER_DEADLINE value %q: %w", envDeadline, err)
+		}
+		deadline = &parsed
+	}
+
+	return Config{
+		Verbose:         verbose,
+		Listeners:       listeners,
+		UseStdio:        useStdio,
+		ShutdownTimeout: shutdownTimeout,
+		AppendOnly:      appendOnly,
+		Deadline:        deadline,
+		MaxIdleTime:     maxIdleTime,
+	}, nil
+}
+
+func main() {
+	config, err := parseConfig()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
-	config, err := parseConfig()
-	if err != nil {
-		log.Printf("%v\n", err)
+	if err := initLogger(config.Verbose); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
@@ -312,7 +334,7 @@ func main() {
 	h := &Handler{
 		conn:       conn,
 		poolName:   poolName,
-		appendOnly: appendOnly,
+		appendOnly: config.AppendOnly,
 	}
 
 	mux := http.NewServeMux()
@@ -347,19 +369,38 @@ func main() {
 		os.Exit(1)
 	}
 
-	listeners = append(listeners, systemdSpecs...)
-	if useStdio && len(listeners) > 0 {
+	config.Listeners = append(config.Listeners, systemdSpecs...)
+	if config.UseStdio && len(config.Listeners) > 0 {
 		log.Printf("Error: --stdio cannot be combined with --listen\n")
 		os.Exit(1)
 	}
-	hasConfiguredListeners := len(listeners) > 0
+	hasConfiguredListeners := len(config.Listeners) > 0
 
-	if !useStdio && !hasConfiguredListeners {
-		useStdio = true
+	if !config.UseStdio && !hasConfiguredListeners {
+		config.UseStdio = true
 	}
 
-	if useStdio {
-		for _, cfg := range listeners {
+	if config.UseStdio && config.MaxIdleTime > 0 {
+		log.Printf("Error: --max-idle-time is not supported in stdio mode\n")
+		os.Exit(1)
+	}
+
+	var monitor *idleMonitor
+	if config.MaxIdleTime > 0 {
+		monitor = newIdleMonitor(config.MaxIdleTime)
+		defer monitor.Stop()
+		go func() {
+			select {
+			case <-monitor.Done():
+				cancel()
+			case <-ctx.Done():
+				monitor.Stop()
+			}
+		}()
+	}
+
+	if config.UseStdio {
+		for _, cfg := range config.Listeners {
 			cfg.Close()
 		}
 
@@ -367,12 +408,12 @@ func main() {
 			kind: listenerTypeStdio,
 			raw:  "stdio",
 		}
-		if err := stdioCfg.Serve(ctx, mux, shutdownTimeout); err != nil && ctx.Err() == nil {
+		if err := stdioCfg.Serve(ctx, mux, config.ShutdownTimeout, monitor); err != nil && ctx.Err() == nil {
 			log.Printf("stdio server error: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
-		if err := serveAllListeners(ctx, cancel, listeners, mux, shutdownTimeout); err != nil {
+		if err := serveAllListeners(ctx, cancel, config.Listeners, mux, config.ShutdownTimeout, monitor); err != nil {
 			log.Printf("server error: %v\n", err)
 			os.Exit(1)
 		}
