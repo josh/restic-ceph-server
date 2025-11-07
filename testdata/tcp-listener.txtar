@@ -1,5 +1,5 @@
 exec restic-ceph-server --addr 127.0.0.1:$PORT &server&
-exec wait4inet 127.0.0.1:$PORT
+exec wait4socket 127.0.0.1:$PORT
 
 exec curl --silent --request POST http://127.0.0.1:$PORT/?create=true
 
