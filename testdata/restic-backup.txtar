@@ -13,7 +13,7 @@ cmp stdout snapshots.txt
 -- password.txt --
 secret
 -- snapshot-count.sh --
-rados --pool $CEPH_POOL --namespace snapshots ls | wc --lines
+rados --pool $CEPH_POOL ls | grep '^snapshots/' | wc --lines
 -- snapshots.txt --
 1
 -- out.json --
