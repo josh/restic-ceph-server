@@ -34,14 +34,19 @@ var (
 )
 
 var (
-	verboseLog *log.Logger
+	maxObjectSize     int64
+	maxObjectSizeOnce sync.Once
+	maxObjectSizeErr  error
 )
+
+var verboseLog *log.Logger
 
 var (
 	errObjectNotFound    = errors.New("object not found")
 	errObjectExists      = errors.New("object exists")
 	errHashMismatch      = errors.New("hash mismatch")
 	errWriteVerification = errors.New("write verification failed")
+	errObjectTooLarge    = errors.New("object too large")
 	hexBlobIDRegex       = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 )
 
@@ -105,6 +110,8 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 		http.Error(w, "hash mismatch", http.StatusBadRequest)
 	case errors.Is(err, errWriteVerification):
 		http.Error(w, "write verification failed", http.StatusInternalServerError)
+	case errors.Is(err, errObjectTooLarge):
+		http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
 	default:
 		log.Printf("failed to serve %s: %v\n", object, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -517,6 +524,31 @@ func setupCephConn() (*rados.Conn, error) {
 	return conn, nil
 }
 
+func getMaxObjectSize() (int64, error) {
+	maxObjectSizeOnce.Do(func() {
+		conn, err := getCephConnection()
+		if err != nil {
+			maxObjectSizeErr = fmt.Errorf("failed to get connection: %w", err)
+			return
+		}
+
+		sizeStr, err := conn.GetConfigOption("osd_max_object_size")
+		if err != nil {
+			maxObjectSizeErr = fmt.Errorf("failed to read osd_max_object_size: %w", err)
+			return
+		}
+
+		size, err := strconv.ParseInt(sizeStr, 10, 64)
+		if err != nil {
+			maxObjectSizeErr = fmt.Errorf("invalid osd_max_object_size value %q: %w", sizeStr, err)
+			return
+		}
+
+		maxObjectSize = size
+	})
+	return maxObjectSize, maxObjectSizeErr
+}
+
 const radosReadChunkSize = 32 * 1024
 
 func expectedHash(object string) ([32]byte, error) {
@@ -675,6 +707,15 @@ func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *
 }
 
 func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string) error {
+	maxSize, err := getMaxObjectSize()
+	if err != nil {
+		return fmt.Errorf("failed to get max object size: %w", err)
+	}
+
+	if r.ContentLength > 0 && r.ContentLength > maxSize {
+		return errObjectTooLarge
+	}
+
 	data := make([]byte, 0, 4096)
 	buffer := make([]byte, 4096)
 
