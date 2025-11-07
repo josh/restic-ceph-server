@@ -212,6 +212,7 @@ func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, er
 			"keyring":                               "/dev/null",
 			"log_to_file":                           "false",
 			"log_to_stderr":                         "true",
+			"osd_max_object_size":                   "16777216", // 16Mi
 			"osd_pool_default_size":                 "1",
 			"osd_pool_default_min_size":             "1",
 			"osd_crush_chooseleaf_type":             "0",

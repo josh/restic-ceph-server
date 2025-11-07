@@ -74,7 +74,28 @@ func isValidBlobType(blobType string) bool {
 	}
 }
 
+type errorCoder interface {
+	ErrorCode() int
+}
+
 func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, object string, err error) {
+	var opErr rados.OperationError
+	if errors.As(err, &opErr) && opErr.OpError != nil {
+		if ec, ok := opErr.OpError.(errorCoder); ok {
+			switch ec.ErrorCode() {
+			case -int(syscall.EFBIG):
+				http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
+				return
+			case -int(syscall.ENOSPC):
+				http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
+				return
+			case -int(syscall.EDQUOT):
+				http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
+				return
+			}
+		}
+	}
+
 	switch {
 	case errors.Is(err, errObjectNotFound):
 		http.NotFound(w, r)
@@ -206,7 +227,7 @@ func initLogger(verbose bool) error {
 
 	logFilePath := os.Getenv("__RESTIC_CEPH_SERVER_LOG_FILE")
 	if logFilePath != "" {
-		file, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		file, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
 			return fmt.Errorf("failed to open log file %s: %w", logFilePath, err)
 		}
