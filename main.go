@@ -174,7 +174,7 @@ func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ioctx.Destroy()
 
-	if err := createRadosObject(w, r, ioctx, "config"); err != nil {
+	if err := createRadosObject(w, r, ioctx, "config", "config"); err != nil {
 		h.handleRadosError(w, r, "config", err)
 	}
 }
@@ -716,7 +716,7 @@ func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *
 	return nil
 }
 
-func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string) error {
+func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string, hashID string) error {
 	maxSize, err := getMaxObjectSize()
 	if err != nil {
 		return fmt.Errorf("failed to get max object size: %w", err)
@@ -742,7 +742,7 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 		}
 	}
 
-	expected, err := expectedHash(object)
+	expected, err := expectedHash(hashID)
 	if err != nil {
 		return err
 	}
@@ -832,8 +832,6 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ioctx.Destroy()
 
-	ioctx.SetNamespace(blobType)
-
 	if err := listBlobsInContext(w, r, ioctx, blobType); err != nil {
 		log.Printf("failed to list %s: %v\n", blobType, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -867,9 +865,9 @@ func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ioctx.Destroy()
 
-	ioctx.SetNamespace(blobType)
+	objectName := blobType + "/" + blobID
 
-	if err := serveRadosObjectWithRequest(w, r, ioctx, blobID, true); err != nil {
+	if err := serveRadosObjectWithRequest(w, r, ioctx, objectName, true); err != nil {
 		h.handleRadosError(w, r, blobID, err)
 	}
 }
@@ -901,9 +899,9 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ioctx.Destroy()
 
-	ioctx.SetNamespace(blobType)
+	objectName := blobType + "/" + blobID
 
-	if err := serveRadosObjectWithRequest(w, r, ioctx, blobID, false); err != nil {
+	if err := serveRadosObjectWithRequest(w, r, ioctx, objectName, false); err != nil {
 		h.handleRadosError(w, r, blobID, err)
 	}
 }
@@ -935,9 +933,9 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ioctx.Destroy()
 
-	ioctx.SetNamespace(blobType)
+	objectName := blobType + "/" + blobID
 
-	if err := createRadosObject(w, r, ioctx, blobID); err != nil {
+	if err := createRadosObject(w, r, ioctx, objectName, blobID); err != nil {
 		h.handleRadosError(w, r, blobID, err)
 	}
 }
@@ -975,9 +973,9 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ioctx.Destroy()
 
-	ioctx.SetNamespace(blobType)
+	objectName := blobType + "/" + blobID
 
-	if err := deleteRadosObject(w, ioctx, blobID); err != nil {
+	if err := deleteRadosObject(w, ioctx, objectName); err != nil {
 		h.handleRadosError(w, r, blobID, err)
 	}
 }
@@ -1021,17 +1019,19 @@ func listBlobsInContext(w http.ResponseWriter, r *http.Request, ioctx *rados.IOC
 	defer iter.Close()
 
 	useV2 := prefersBlobListV2(r)
+	prefix := blobType + "/"
 
 	var blobNames []string
 	var blobInfos []blobInfo
 
 	for iter.Next() {
-		blobID := iter.Value()
-		if blobID != "" {
+		objectName := iter.Value()
+		if objectName != "" && strings.HasPrefix(objectName, prefix) {
+			blobID := strings.TrimPrefix(objectName, prefix)
 			if useV2 {
-				stat, err := ioctx.Stat(blobID)
+				stat, err := ioctx.Stat(objectName)
 				if err != nil {
-					return fmt.Errorf("stat %s: %w", blobID, err)
+					return fmt.Errorf("stat %s: %w", objectName, err)
 				}
 				blobInfos = append(blobInfos, blobInfo{
 					Name: blobID,
