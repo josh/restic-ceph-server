@@ -50,15 +50,110 @@ var (
 	hexBlobIDRegex       = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 )
 
-type addrList []string
-
-func (a *addrList) String() string {
-	return strings.Join(*a, ",")
+type listenerSpec struct {
+	network string
+	address string
+	raw     string
 }
 
-func (a *addrList) Set(value string) error {
-	*a = append(*a, value)
+type listenerSpecs []listenerSpec
+
+func (l *listenerSpecs) String() string {
+	parts := make([]string, len(*l))
+	for i, spec := range *l {
+		parts[i] = spec.raw
+	}
+	return strings.Join(parts, ",")
+}
+
+func (l *listenerSpecs) Set(value string) error {
+	spec, err := parseListenerSpec(value)
+	if err != nil {
+		return err
+	}
+	*l = append(*l, spec)
 	return nil
+}
+
+func parseListenerSpec(value string) (listenerSpec, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return listenerSpec{}, fmt.Errorf("invalid --listen value %q: empty specification", value)
+	}
+
+	spec := listenerSpec{raw: trimmed}
+	working := trimmed
+	lower := strings.ToLower(working)
+
+	switch {
+	case strings.HasPrefix(lower, "unix://"):
+		working = working[len("unix://"):]
+		spec.network = "unix"
+	case strings.HasPrefix(lower, "unix:"):
+		working = working[len("unix:"):]
+		spec.network = "unix"
+	case strings.HasPrefix(lower, "tcp://"):
+		working = working[len("tcp://"):]
+		spec.network = "tcp"
+	case strings.HasPrefix(lower, "tcp:"):
+		working = working[len("tcp:"):]
+		spec.network = "tcp"
+	}
+
+	if spec.network == "unix" {
+		if working == "" {
+			return listenerSpec{}, fmt.Errorf("invalid --listen value %q: missing Unix socket path", value)
+		}
+		spec.address = working
+		return spec, nil
+	}
+
+	if spec.network == "tcp" {
+		if !strings.Contains(working, ":") {
+			return listenerSpec{}, fmt.Errorf("invalid --listen value %q: TCP listeners must specify host:port", value)
+		}
+		host, port, err := net.SplitHostPort(working)
+		if err != nil {
+			return listenerSpec{}, fmt.Errorf("invalid --listen value %q: %w", value, err)
+		}
+		if port == "" {
+			return listenerSpec{}, fmt.Errorf("invalid --listen value %q: missing port", value)
+		}
+		spec.address = net.JoinHostPort(host, port)
+		return spec, nil
+	}
+
+	if strings.HasPrefix(working, "/") || strings.HasPrefix(working, ".") || strings.HasPrefix(working, "@") || strings.Contains(working, "/") {
+		spec.network = "unix"
+		spec.address = working
+		return spec, nil
+	}
+
+	if !strings.Contains(working, ":") {
+		spec.network = "unix"
+		spec.address = working
+		return spec, nil
+	}
+
+	host, port, err := net.SplitHostPort(working)
+	if err != nil {
+		return listenerSpec{}, fmt.Errorf("invalid --listen value %q: %w", value, err)
+	}
+	if port == "" {
+		return listenerSpec{}, fmt.Errorf("invalid --listen value %q: missing port", value)
+	}
+	spec.network = "tcp"
+	spec.address = net.JoinHostPort(host, port)
+	return spec, nil
+}
+
+func (s listenerSpec) description() string {
+	switch s.network {
+	case "unix":
+		return fmt.Sprintf("unix://%s", s.address)
+	default:
+		return s.address
+	}
 }
 
 type Handler struct {
@@ -282,15 +377,13 @@ func parseConfig() (Config, error) {
 
 func main() {
 	var verbose bool
-	var socketPath string
-	var addrs addrList
+	var listeners listenerSpecs
 	var useStdio bool
 	var shutdownTimeout time.Duration
 	var appendOnly bool
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
-	flag.StringVar(&socketPath, "socket", "", "Unix socket path to listen on")
-	flag.Var(&addrs, "addr", "TCP address to listen on (host:port), repeatable for multiple interfaces")
+	flag.Var(&listeners, "listen", "Address or Unix socket path to listen on, repeatable")
 	flag.BoolVar(&useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
 	flag.DurationVar(&shutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful shutdown timeout for listeners")
 	flag.BoolVar(&appendOnly, "append-only", false, "enable append-only mode (delete allowed for locks only)")
@@ -301,16 +394,9 @@ func main() {
 		verbose = envVerbose == "1" || strings.EqualFold(envVerbose, "true") || strings.EqualFold(envVerbose, "yes")
 	}
 
-	if useStdio && (socketPath != "" || len(addrs) > 0) {
-		log.Printf("Error: --stdio cannot be combined with --socket or --addr\n")
+	if useStdio && len(listeners) > 0 {
+		log.Printf("Error: --stdio cannot be combined with --listen\n")
 		os.Exit(1)
-	}
-
-	for _, addr := range addrs {
-		if !strings.Contains(addr, ":") {
-			log.Printf("Error: invalid --addr format '%s': must specify port (e.g., :8080 or 127.0.0.1:8080)\n", addr)
-			os.Exit(1)
-		}
 	}
 
 	if err := initLogger(verbose); err != nil {
@@ -374,7 +460,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	hasListeners := socketPath != "" || len(addrs) > 0 || len(systemdListeners) > 0
+	hasListeners := len(listeners) > 0 || len(systemdListeners) > 0
 
 	if useStdio || !hasListeners {
 		server := &http2.Server{}
@@ -390,22 +476,7 @@ func main() {
 		})
 	} else {
 		var wg sync.WaitGroup
-		errChan := make(chan error, 1+len(addrs)+len(systemdListeners))
-
-		if socketPath != "" {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				log.Printf("Listening on unix://%s\n", socketPath)
-				if err := serveUnixSocket(ctx, socketPath, mux, shutdownTimeout); err != nil && ctx.Err() == nil {
-					select {
-					case errChan <- fmt.Errorf("unix socket error: %w", err):
-					default:
-					}
-					cancel()
-				}
-			}()
-		}
+		errChan := make(chan error, 1+len(listeners)+len(systemdListeners))
 
 		for i, listener := range systemdListeners {
 			wg.Add(1)
@@ -422,14 +493,24 @@ func main() {
 			}(i, listener)
 		}
 
-		for _, addr := range addrs {
+		for _, spec := range listeners {
+			spec := spec
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				log.Printf("Listening on %s\n", addr)
-				if err := serveTCPListener(ctx, addr, mux, shutdownTimeout); err != nil && ctx.Err() == nil {
+				log.Printf("Listening on %s\n", spec.description())
+				var err error
+				switch spec.network {
+				case "unix":
+					err = serveUnixSocket(ctx, spec.address, mux, shutdownTimeout)
+				case "tcp":
+					err = serveTCPListener(ctx, spec.address, mux, shutdownTimeout)
+				default:
+					err = fmt.Errorf("unsupported listener type %q", spec.network)
+				}
+				if err != nil && ctx.Err() == nil {
 					select {
-					case errChan <- fmt.Errorf("TCP listener %s error: %w", addr, err):
+					case errChan <- fmt.Errorf("listener %s error: %w", spec.description(), err):
 					default:
 					}
 					cancel()
