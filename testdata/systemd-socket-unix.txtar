@@ -1,0 +1,18 @@
+exec systemd-socket-activate --setenv=CEPH_POOL --setenv=CEPH_CONF --setenv=__RESTIC_CEPH_VERBOSE --setenv=__RESTIC_CEPH_SERVER_DEADLINE --setenv=__RESTIC_CEPH_SERVER_LOG_FILE --listen=$WORK/restic.sock restic-ceph-server &server&
+exec wait4unix $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET http://localhost/config
+cmp stdout config-data
+
+exec curl --silent --unix-socket $WORK/restic.sock --head --include http://localhost/config
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 66'
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}

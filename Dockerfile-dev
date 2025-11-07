@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install --yes \
     curl \
     golang-go \
     jq \
-    librados-dev
+    librados-dev \
+    systemd
 
 ADD ./scripts/install-restic.sh /tmp/install-restic.sh
 RUN /tmp/install-restic.sh /usr/local/bin && rm /tmp/install-restic.sh
