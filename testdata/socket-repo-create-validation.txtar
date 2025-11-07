@@ -1,4 +1,4 @@
-exec restic-ceph-server --socket $WORK/restic.sock &server&
+exec restic-ceph-server --listen $WORK/restic.sock &server&
 exec wait4socket $WORK/restic.sock
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/' --output response1.txt
