@@ -1,0 +1,23 @@
+exec restic-ceph-server --append-only --socket $WORK/restic.sock &server&
+exec wait4unix $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @config-data 'http://localhost/config'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @config-data-modified 'http://localhost/config' --output /dev/null
+stdout '403'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- config-data-modified --
+{"version":2,"id":"test","chunker_polynomial":"11111111111111111"}
+-- blob-data --
+test blob content

@@ -62,8 +62,9 @@ func (a *addrList) Set(value string) error {
 }
 
 type Handler struct {
-	conn     *rados.Conn
-	poolName string
+	conn       *rados.Conn
+	poolName   string
+	appendOnly bool
 }
 
 func (h *Handler) openIOContext() (*rados.IOContext, error) {
@@ -181,6 +182,12 @@ func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
+	if h.appendOnly {
+		verboseLog.Printf("delete blocked in append-only mode for config\n")
+		http.Error(w, "delete not allowed in append-only mode", http.StatusForbidden)
+		return
+	}
+
 	ioctx, err := h.openIOContext()
 	if err != nil {
 		if errors.Is(err, rados.ErrNotFound) {
@@ -279,12 +286,14 @@ func main() {
 	var addrs addrList
 	var useStdio bool
 	var shutdownTimeout time.Duration
+	var appendOnly bool
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	flag.StringVar(&socketPath, "socket", "", "Unix socket path to listen on")
 	flag.Var(&addrs, "addr", "TCP address to listen on (host:port), repeatable for multiple interfaces")
 	flag.BoolVar(&useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
 	flag.DurationVar(&shutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful shutdown timeout for listeners")
+	flag.BoolVar(&appendOnly, "append-only", false, "enable append-only mode (delete allowed for locks only)")
 	flag.Parse()
 
 	if !verbose {
@@ -328,8 +337,9 @@ func main() {
 	}
 
 	h := &Handler{
-		conn:     conn,
-		poolName: poolName,
+		conn:       conn,
+		poolName:   poolName,
+		appendOnly: appendOnly,
 	}
 
 	mux := http.NewServeMux()
@@ -944,6 +954,12 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	blobID := r.PathValue("id")
 	if !hexBlobIDRegex.MatchString(blobID) {
 		http.NotFound(w, r)
+		return
+	}
+
+	if h.appendOnly && blobType != "locks" {
+		verboseLog.Printf("delete blocked in append-only mode for type %s\n", blobType)
+		http.Error(w, "delete not allowed in append-only mode", http.StatusForbidden)
 		return
 	}
 

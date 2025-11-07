@@ -1,0 +1,28 @@
+env TZ=UTC
+env RESTIC_CEPH_SERVER_ARGS=--append-only
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args=--append-only --repo rclone: --password-file password.txt
+
+exec mkdir data
+exec touch data/foo.txt
+
+exec restic backup --time '2025-01-01 10:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=--append-only --repo rclone: --password-file password.txt
+exec restic backup --time '2025-01-01 11:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=--append-only --repo rclone: --password-file password.txt
+exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=--append-only --repo rclone: --password-file password.txt
+
+exec bash snapshot-count.sh
+cmp stdout snapshots-before.txt
+
+exec restic forget --keep-last 1 --option rclone.program=restic-ceph-server --option rclone.args=--append-only --repo rclone: --password-file password.txt
+stderr '403'
+
+exec bash snapshot-count.sh
+cmp stdout snapshots-after.txt
+
+-- password.txt --
+secret
+-- snapshot-count.sh --
+rados --pool $CEPH_POOL --namespace snapshots ls | wc --lines
+-- snapshots-before.txt --
+3
+-- snapshots-after.txt --
+3
