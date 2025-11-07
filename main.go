@@ -12,7 +12,6 @@ import (
 	"log"
 	"math"
 	"mime"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,7 +23,6 @@ import (
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
-	"golang.org/x/net/http2"
 )
 
 var (
@@ -49,112 +47,6 @@ var (
 	errObjectTooLarge    = errors.New("object too large")
 	hexBlobIDRegex       = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 )
-
-type listenerSpec struct {
-	network string
-	address string
-	raw     string
-}
-
-type listenerSpecs []listenerSpec
-
-func (l *listenerSpecs) String() string {
-	parts := make([]string, len(*l))
-	for i, spec := range *l {
-		parts[i] = spec.raw
-	}
-	return strings.Join(parts, ",")
-}
-
-func (l *listenerSpecs) Set(value string) error {
-	spec, err := parseListenerSpec(value)
-	if err != nil {
-		return err
-	}
-	*l = append(*l, spec)
-	return nil
-}
-
-func parseListenerSpec(value string) (listenerSpec, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return listenerSpec{}, fmt.Errorf("invalid --listen value %q: empty specification", value)
-	}
-
-	spec := listenerSpec{raw: trimmed}
-	working := trimmed
-	lower := strings.ToLower(working)
-
-	switch {
-	case strings.HasPrefix(lower, "unix://"):
-		working = working[len("unix://"):]
-		spec.network = "unix"
-	case strings.HasPrefix(lower, "unix:"):
-		working = working[len("unix:"):]
-		spec.network = "unix"
-	case strings.HasPrefix(lower, "tcp://"):
-		working = working[len("tcp://"):]
-		spec.network = "tcp"
-	case strings.HasPrefix(lower, "tcp:"):
-		working = working[len("tcp:"):]
-		spec.network = "tcp"
-	}
-
-	if spec.network == "unix" {
-		if working == "" {
-			return listenerSpec{}, fmt.Errorf("invalid --listen value %q: missing Unix socket path", value)
-		}
-		spec.address = working
-		return spec, nil
-	}
-
-	if spec.network == "tcp" {
-		if !strings.Contains(working, ":") {
-			return listenerSpec{}, fmt.Errorf("invalid --listen value %q: TCP listeners must specify host:port", value)
-		}
-		host, port, err := net.SplitHostPort(working)
-		if err != nil {
-			return listenerSpec{}, fmt.Errorf("invalid --listen value %q: %w", value, err)
-		}
-		if port == "" {
-			return listenerSpec{}, fmt.Errorf("invalid --listen value %q: missing port", value)
-		}
-		spec.address = net.JoinHostPort(host, port)
-		return spec, nil
-	}
-
-	if strings.HasPrefix(working, "/") || strings.HasPrefix(working, ".") || strings.HasPrefix(working, "@") || strings.Contains(working, "/") {
-		spec.network = "unix"
-		spec.address = working
-		return spec, nil
-	}
-
-	if !strings.Contains(working, ":") {
-		spec.network = "unix"
-		spec.address = working
-		return spec, nil
-	}
-
-	host, port, err := net.SplitHostPort(working)
-	if err != nil {
-		return listenerSpec{}, fmt.Errorf("invalid --listen value %q: %w", value, err)
-	}
-	if port == "" {
-		return listenerSpec{}, fmt.Errorf("invalid --listen value %q: missing port", value)
-	}
-	spec.network = "tcp"
-	spec.address = net.JoinHostPort(host, port)
-	return spec, nil
-}
-
-func (s listenerSpec) description() string {
-	switch s.network {
-	case "unix":
-		return fmt.Sprintf("unix://%s", s.address)
-	default:
-		return s.address
-	}
-}
 
 type Handler struct {
 	conn       *rados.Conn
@@ -377,7 +269,7 @@ func parseConfig() (Config, error) {
 
 func main() {
 	var verbose bool
-	var listeners listenerSpecs
+	var listeners listenerFlags
 	var useStdio bool
 	var shutdownTimeout time.Duration
 	var appendOnly bool
@@ -392,11 +284,6 @@ func main() {
 	if !verbose {
 		envVerbose := os.Getenv("__RESTIC_CEPH_VERBOSE")
 		verbose = envVerbose == "1" || strings.EqualFold(envVerbose, "true") || strings.EqualFold(envVerbose, "yes")
-	}
-
-	if useStdio && len(listeners) > 0 {
-		log.Printf("Error: --stdio cannot be combined with --listen\n")
-		os.Exit(1)
 	}
 
 	if err := initLogger(verbose); err != nil {
@@ -454,74 +341,38 @@ func main() {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	systemdListeners, err := systemdListeners()
+	systemdSpecs, err := systemdListeners()
 	if err != nil {
 		log.Printf("failed to get systemd listeners: %v\n", err)
 		os.Exit(1)
 	}
 
-	hasListeners := len(listeners) > 0 || len(systemdListeners) > 0
+	listeners = append(listeners, systemdSpecs...)
+	if useStdio && len(listeners) > 0 {
+		log.Printf("Error: --stdio cannot be combined with --listen\n")
+		os.Exit(1)
+	}
+	hasConfiguredListeners := len(listeners) > 0
 
-	if useStdio || !hasListeners {
-		server := &http2.Server{}
+	if !useStdio && !hasConfiguredListeners {
+		useStdio = true
+	}
 
-		stdioConn := &StdioConn{
-			stdin:  os.Stdin,
-			stdout: os.Stdout,
+	if useStdio {
+		for _, cfg := range listeners {
+			cfg.Close()
 		}
 
-		server.ServeConn(stdioConn, &http2.ServeConnOpts{
-			Context: ctx,
-			Handler: mux,
-		})
+		stdioCfg := listenerConfig{
+			kind: listenerTypeStdio,
+			raw:  "stdio",
+		}
+		if err := stdioCfg.Serve(ctx, mux, shutdownTimeout); err != nil && ctx.Err() == nil {
+			log.Printf("stdio server error: %v\n", err)
+			os.Exit(1)
+		}
 	} else {
-		var wg sync.WaitGroup
-		errChan := make(chan error, 1+len(listeners)+len(systemdListeners))
-
-		for i, listener := range systemdListeners {
-			wg.Add(1)
-			go func(idx int, l net.Listener) {
-				defer wg.Done()
-				log.Printf("Listening on systemd socket %s (%s)\n", l.Addr().String(), l.Addr().Network())
-				if err := serveSystemdListener(ctx, l, mux, shutdownTimeout); err != nil && ctx.Err() == nil {
-					select {
-					case errChan <- fmt.Errorf("systemd listener %d error: %w", idx, err):
-					default:
-					}
-					cancel()
-				}
-			}(i, listener)
-		}
-
-		for _, spec := range listeners {
-			spec := spec
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				log.Printf("Listening on %s\n", spec.description())
-				var err error
-				switch spec.network {
-				case "unix":
-					err = serveUnixSocket(ctx, spec.address, mux, shutdownTimeout)
-				case "tcp":
-					err = serveTCPListener(ctx, spec.address, mux, shutdownTimeout)
-				default:
-					err = fmt.Errorf("unsupported listener type %q", spec.network)
-				}
-				if err != nil && ctx.Err() == nil {
-					select {
-					case errChan <- fmt.Errorf("listener %s error: %w", spec.description(), err):
-					default:
-					}
-					cancel()
-				}
-			}()
-		}
-
-		wg.Wait()
-		close(errChan)
-
-		if err := <-errChan; err != nil {
+		if err := serveAllListeners(ctx, cancel, listeners, mux, shutdownTimeout); err != nil {
 			log.Printf("server error: %v\n", err)
 			os.Exit(1)
 		}
@@ -531,115 +382,6 @@ func main() {
 		log.Printf("Server terminated due to deadline\n")
 		os.Exit(1)
 	}
-}
-
-const listenFdsStart = 3
-
-func systemdFiles(unsetEnv bool) []*os.File {
-	if unsetEnv {
-		defer func() {
-			_ = os.Unsetenv("LISTEN_PID")
-			_ = os.Unsetenv("LISTEN_FDS")
-			_ = os.Unsetenv("LISTEN_FDNAMES")
-		}()
-	}
-
-	pid, err := strconv.Atoi(os.Getenv("LISTEN_PID"))
-	if err != nil || pid != os.Getpid() {
-		return nil
-	}
-
-	nfds, err := strconv.Atoi(os.Getenv("LISTEN_FDS"))
-	if err != nil || nfds <= 0 {
-		return nil
-	}
-
-	names := strings.Split(os.Getenv("LISTEN_FDNAMES"), ":")
-
-	files := make([]*os.File, 0, nfds)
-	for fd := listenFdsStart; fd < listenFdsStart+nfds; fd++ {
-		syscall.CloseOnExec(fd)
-		name := "LISTEN_FD_" + strconv.Itoa(fd)
-		offset := fd - listenFdsStart
-		if offset < len(names) && len(names[offset]) > 0 {
-			name = names[offset]
-		}
-		files = append(files, os.NewFile(uintptr(fd), name))
-	}
-
-	return files
-}
-
-func systemdListeners() ([]net.Listener, error) {
-	files := systemdFiles(true)
-	listeners := make([]net.Listener, 0, len(files))
-
-	for _, f := range files {
-		if listener, err := net.FileListener(f); err == nil {
-			listeners = append(listeners, listener)
-			_ = f.Close()
-		}
-	}
-
-	return listeners, nil
-}
-
-func serveListener(ctx context.Context, listener net.Listener, handler http.Handler, shutdownTimeout time.Duration) error {
-	server := &http.Server{
-		Handler: handler,
-	}
-
-	_ = http2.ConfigureServer(server, &http2.Server{})
-
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- server.Serve(listener)
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer shutdownCancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("server shutdown error: %v\n", err)
-		}
-		return ctx.Err()
-	case err := <-errChan:
-		if err != nil && err != http.ErrServerClosed {
-			return err
-		}
-		return nil
-	}
-}
-
-func serveUnixSocket(ctx context.Context, socketPath string, handler http.Handler, shutdownTimeout time.Duration) error {
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove existing socket: %w", err)
-	}
-
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		return fmt.Errorf("failed to create Unix socket listener: %w", err)
-	}
-	defer func() { _ = listener.Close() }()
-	defer func() { _ = os.Remove(socketPath) }()
-
-	return serveListener(ctx, listener, handler, shutdownTimeout)
-}
-
-func serveTCPListener(ctx context.Context, addr string, handler http.Handler, shutdownTimeout time.Duration) error {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to create TCP listener: %w", err)
-	}
-	defer func() { _ = listener.Close() }()
-
-	return serveListener(ctx, listener, handler, shutdownTimeout)
-}
-
-func serveSystemdListener(ctx context.Context, listener net.Listener, handler http.Handler, shutdownTimeout time.Duration) error {
-	defer func() { _ = listener.Close() }()
-	return serveListener(ctx, listener, handler, shutdownTimeout)
 }
 
 func getCephConnection() (*rados.Conn, error) {
