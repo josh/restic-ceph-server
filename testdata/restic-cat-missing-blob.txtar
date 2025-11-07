@@ -5,7 +5,7 @@ cmp stdout out.txt
 
 cp stderr restic-cat-blob-stderr
 stdin restic-cat-blob-stderr
-exec sed -E 's/[0-9A-Fa-f]{10,}/[HEX]/g'
+exec scrubhex - -
 cmp stdout err.txt
 
 -- password.txt --

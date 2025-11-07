@@ -3,16 +3,24 @@ env RESTIC_PROGRESS_FPS=0
 
 exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
-exec bash prepare-first.sh data
+rm -r data
+mkdir data
+exec bin-file rand data/file-a.bin 16384
+exec bin-file rand data/file-b.bin 16384
 exec restic backup --time '2025-01-01 10:00:00' data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
-exec bash prepare-second.sh data
+rm -r data
+mkdir data
+exec bin-file rand data/file-a.bin 16384
+exec bin-file rand data/file-c.bin 16384
 exec restic backup --time '2025-01-01 11:00:00' data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
-exec bash prepare-third.sh data
+rm -r data
+mkdir data
+exec bin-file rand data/file-d.bin 16384
 exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
-exec bash data-count.sh
+exec rados-object-count data/
 cmp stdout data-before.txt
 
 exec restic prune --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
@@ -30,34 +38,15 @@ exec grep '^total prune:' prune-after.txt
 exec grep 'total prune:.* KiB' prune-after.txt
 ! exec grep 'total prune:[[:space:]]*0 blobs' prune-after.txt
 
-exec bash data-count.sh
+exec rados-object-count data/
 cmp stdout data-after.txt
 
 -- password.txt --
 secret
--- data-count.sh --
-rados --pool $CEPH_POOL ls | grep '^data/' | wc --lines
 -- data-before.txt --
 6
 -- data-after.txt --
 2
--- prepare-first.sh --
-set -o errexit
-rm -rf "$1"
-mkdir "$1"
-head -c 16384 /dev/urandom >"$1/file-a.bin"
-head -c 16384 /dev/urandom >"$1/file-b.bin"
--- prepare-second.sh --
-set -o errexit
-rm -rf "$1"
-mkdir "$1"
-head -c 16384 /dev/urandom >"$1/file-a.bin"
-head -c 16384 /dev/urandom >"$1/file-c.bin"
--- prepare-third.sh --
-set -o errexit
-rm -rf "$1"
-mkdir "$1"
-head -c 16384 /dev/urandom >"$1/file-d.bin"
 -- forget.json --
 {
   "keep": 1,

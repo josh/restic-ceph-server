@@ -1,6 +1,14 @@
 exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
-exec bash generate-data.sh
+mkdir data
+exec bin-file rand data/blob0.bin 16384
+exec bin-file rand data/blob1.bin 16384
+exec bin-file rand data/blob2.bin 16384
+exec bin-file rand data/blob3.bin 16384
+exec bin-file rand data/blob4.bin 16384
+exec bin-file rand data/blob5.bin 16384
+exec bin-file rand data/blob6.bin 16384
+exec bin-file rand data/blob7.bin 16384
 
 exec restic backup data --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
@@ -11,15 +19,6 @@ cmp stdout check.json
 
 -- password.txt --
 secret
--- generate-data.sh --
-set -o errexit
-set -o pipefail
-
-mkdir data
-
-for i in $(seq 0 7); do
-	head -c 16384 /dev/urandom >"data/blob${i}.bin"
-done
 -- expr.jq --
 {
   error_messages: (map(select(.message_type == "error")) | length),

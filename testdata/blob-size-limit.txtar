@@ -3,19 +3,13 @@ exec wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
 
-exec bash generate-large-blob.sh
+exec bin-file zeros large-blob 17000000
 
-exec bash check-file-size.sh
+stdin large-blob
+exec wc -c
 stdout '17000000'
 
 ! exec curl --fail --show-error --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000000'
 stderr '413'
 
 kill server
-
--- generate-large-blob.sh --
-set -o errexit
-head -c 17000000 /dev/zero >large-blob
--- check-file-size.sh --
-set -o errexit
-wc -c <large-blob
