@@ -12,33 +12,31 @@ exec restic snapshots --json --option rclone.program=restic-ceph-server --option
 stdin stdout
 exec jq '[.[] | {time: .time, short_id: .short_id}]'
 stdin stdout
-exec sed -E 's/"[0-9a-f]{8,}"/"[HEX]"/g'
+exec scrubhex - -
 cmp stdout snapshots-before.json
 
-exec bash snapshot-count.sh
+exec rados-object-count snapshots/
 cmp stdout snapshots-before.txt
 
 exec restic forget --json --keep-last 1 --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
 stdin stdout
 exec jq '.[0] | {keep: [.keep[] | {time: .time, short_id: .short_id}], remove: [.remove[] | {time: .time, short_id: .short_id}]}'
 stdin stdout
-exec sed -E 's/"[0-9a-f]{8,}"/"[HEX]"/g'
+exec scrubhex - -
 cmp stdout forget-out.json
 
 exec restic snapshots --json --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
 stdin stdout
 exec jq '[.[] | {time: .time, short_id: .short_id}]'
 stdin stdout
-exec sed -E 's/"[0-9a-f]{8,}"/"[HEX]"/g'
+exec scrubhex - -
 cmp stdout snapshots-after.json
 
-exec bash snapshot-count.sh
+exec rados-object-count snapshots/
 cmp stdout snapshots-after.txt
 
 -- password.txt --
 secret
--- snapshot-count.sh --
-rados --pool $CEPH_POOL ls | grep '^snapshots/' | wc --lines
 -- snapshots-before.txt --
 3
 -- snapshots-after.txt --

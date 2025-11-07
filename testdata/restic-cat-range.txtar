@@ -1,6 +1,38 @@
 exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
-exec bash generate-packs.sh
+mkdir files
+exec bin-file rand files/file0.bin 16384
+exec bin-file rand files/file1.bin 16384
+exec bin-file rand files/file2.bin 16384
+exec bin-file rand files/file3.bin 16384
+exec bin-file rand files/file4.bin 16384
+exec bin-file rand files/file5.bin 16384
+exec bin-file rand files/file6.bin 16384
+exec bin-file rand files/file7.bin 16384
+exec bin-file rand files/file8.bin 16384
+exec bin-file rand files/file9.bin 16384
+exec bin-file rand files/file10.bin 16384
+exec bin-file rand files/file11.bin 16384
+exec bin-file rand files/file12.bin 16384
+exec bin-file rand files/file13.bin 16384
+exec bin-file rand files/file14.bin 16384
+exec bin-file rand files/file15.bin 16384
+exec bin-file rand files/file16.bin 16384
+exec bin-file rand files/file17.bin 16384
+exec bin-file rand files/file18.bin 16384
+exec bin-file rand files/file19.bin 16384
+exec bin-file rand files/file20.bin 16384
+exec bin-file rand files/file21.bin 16384
+exec bin-file rand files/file22.bin 16384
+exec bin-file rand files/file23.bin 16384
+exec bin-file rand files/file24.bin 16384
+exec bin-file rand files/file25.bin 16384
+exec bin-file rand files/file26.bin 16384
+exec bin-file rand files/file27.bin 16384
+exec bin-file rand files/file28.bin 16384
+exec bin-file rand files/file29.bin 16384
+exec bin-file rand files/file30.bin 16384
+exec bin-file rand files/file31.bin 16384
 
 exec restic backup files --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
 
@@ -29,12 +61,3 @@ set -o pipefail
 
 read -r blob_id
 restic cat blob "$blob_id" --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt | wc --bytes
--- generate-packs.sh --
-set -o errexit
-set -o pipefail
-
-mkdir files
-
-for i in $(seq 0 31); do
-	head -c 16384 /dev/urandom >"files/file${i}.bin"
-done

@@ -4,21 +4,19 @@ exec restic backup --json $WORK --option rclone.program=restic-ceph-server --opt
 stdin stdout
 exec jq -s '[.[] | select(.message_type == "summary")] | .[0] | {files_new: .files_new, files_changed: .files_changed, files_unmodified: .files_unmodified, dirs_new: .dirs_new, dirs_changed: .dirs_changed, dirs_unmodified: .dirs_unmodified, snapshot_id: .snapshot_id}'
 stdin stdout
-exec sed -E 's/"[0-9a-f]{10,}"/"[HEX]"/g'
+exec scrubhex - -
 cmp stdout out.json
 
-exec bash snapshot-count.sh
+exec rados-object-count snapshots/
 cmp stdout snapshots.txt
 
 -- password.txt --
 secret
--- snapshot-count.sh --
-rados --pool $CEPH_POOL ls | grep '^snapshots/' | wc --lines
 -- snapshots.txt --
 1
 -- out.json --
 {
-  "files_new": 4,
+  "files_new": 3,
   "files_changed": 0,
   "files_unmodified": 0,
   "dirs_new": 4,

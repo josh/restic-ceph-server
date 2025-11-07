@@ -2,14 +2,14 @@ exec restic init --json --option rclone.program=restic-ceph-server --option rclo
 stdin stdout
 exec jq '{message_type: .message_type, id: .id}'
 stdin stdout
-exec sed -E 's/"[0-9a-f]{10,}"/"[HEX]"/g'
+exec scrubhex - -
 cmp stdout out.json
 
 exec restic cat config --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
 cp stdout restic-cat-config-stdout
 
 stdin restic-cat-config-stdout
-exec sed -E 's/[0-9a-f]{10,}/[HEX]/g'
+exec scrubhex - -
 cmp stdout config.txt
 
 -- out.json --

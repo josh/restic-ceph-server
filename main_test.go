@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,9 @@ func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
 		"restic-ceph-server": main,
 		"wait4socket":        waitForSocket,
+		"rados-object-count": radosObjectCount,
+		"scrubhex":           scrubHex,
+		"bin-file":           binFile,
 	})
 }
 
@@ -522,4 +526,161 @@ func waitForSocket() {
 	}
 
 	os.Exit(0)
+}
+
+func radosObjectCount() {
+	if len(os.Args) != 2 {
+		fmt.Fprintf(os.Stderr, "usage: rados-object-count <prefix>\n")
+		os.Exit(1)
+	}
+
+	prefix := os.Args[1]
+	pool := os.Getenv("CEPH_POOL")
+	if pool == "" {
+		fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
+		os.Exit(1)
+	}
+
+	cmd := exec.Command("rados", "--pool", pool, "ls")
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to list rados objects: %v\n", err)
+		os.Exit(1)
+	}
+
+	count := 0
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, prefix) {
+			count++
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to scan output: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("%d\n", count)
+	os.Exit(0)
+}
+
+func scrubHex() {
+	if len(os.Args) != 3 {
+		fmt.Fprintf(os.Stderr, "usage: scrubhex <input-file> <output-file>\n")
+		fmt.Fprintf(os.Stderr, "  use '-' for stdin/stdout\n")
+		os.Exit(1)
+	}
+
+	inputPath := os.Args[1]
+	outputPath := os.Args[2]
+
+	var input []byte
+	var err error
+	if inputPath == "-" {
+		input, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to read stdin: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		input, err = os.ReadFile(inputPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to read input file: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	quotedHexPattern := regexp.MustCompile(`"[0-9a-f]{8,}"`)
+	output := quotedHexPattern.ReplaceAll(input, []byte(`"[HEX]"`))
+
+	hexPattern := regexp.MustCompile(`[0-9a-f]{8,}`)
+	output = hexPattern.ReplaceAll(output, []byte("[HEX]"))
+
+	if outputPath == "-" {
+		_, err = os.Stdout.Write(output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write to stdout: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		err = os.WriteFile(outputPath, output, 0o644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write output file: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	os.Exit(0)
+}
+
+func binFile() {
+	if len(os.Args) != 4 {
+		fmt.Fprintf(os.Stderr, "usage: bin-file <rand|zeros|ones> <path> <size-bytes>\n")
+		os.Exit(1)
+	}
+
+	mode := os.Args[1]
+	path := os.Args[2]
+	sizeStr := os.Args[3]
+
+	if mode != "rand" && mode != "zeros" && mode != "ones" {
+		fmt.Fprintf(os.Stderr, "mode must be rand, zeros, or ones\n")
+		os.Exit(1)
+	}
+
+	size, err := strconv.ParseInt(sizeStr, 10, 64)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid size: %v\n", err)
+		os.Exit(1)
+	}
+
+	if size < 0 {
+		fmt.Fprintf(os.Stderr, "size must be non-negative\n")
+		os.Exit(1)
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create file: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() { _ = file.Close() }()
+
+	var reader io.Reader
+	switch mode {
+	case "rand":
+		reader = io.LimitReader(rand.Reader, size)
+	case "zeros":
+		reader = io.LimitReader(zeroReader{}, size)
+	case "ones":
+		reader = io.LimitReader(onesReader{}, size)
+	}
+
+	_, err = io.Copy(file, reader)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write file: %v\n", err)
+		os.Exit(1)
+	}
+
+	os.Exit(0)
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (n int, err error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+type onesReader struct{}
+
+func (onesReader) Read(p []byte) (n int, err error) {
+	for i := range p {
+		p[i] = 0xFF
+	}
+	return len(p), nil
 }
