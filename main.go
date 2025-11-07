@@ -84,6 +84,8 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 		http.Error(w, "hash mismatch", http.StatusBadRequest)
 	case errors.Is(err, errWriteVerification):
 		http.Error(w, "write verification failed", http.StatusInternalServerError)
+	case errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT):
+		http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
 	default:
 		log.Printf("failed to serve %s: %v\n", object, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
