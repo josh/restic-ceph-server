@@ -75,10 +75,11 @@ func TestScript(t *testing.T) {
 	updateScripts, _ := strconv.ParseBool(os.Getenv("UPDATE_SCRIPTS"))
 
 	testscript.Run(t, testscript.Params{
-		Dir:             "testdata",
-		ContinueOnError: true,
-		UpdateScripts:   updateScripts,
-		Deadline:        deadline,
+		Dir:                 "testdata",
+		ContinueOnError:     true,
+		RequireExplicitExec: true,
+		UpdateScripts:       updateScripts,
+		Deadline:            deadline,
 		Setup: func(env *testscript.Env) error {
 			poolName, err := createCephPool(ctx, confPath)
 			if err != nil {
