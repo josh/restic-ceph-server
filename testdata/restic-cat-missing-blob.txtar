@@ -6,8 +6,7 @@ exec restic init --option rclone.program=restic-ceph-server --option rclone.args
 cmp stdout out.txt
 
 cp stderr restic-cat-blob-stderr
-stdin restic-cat-blob-stderr
-exec scrubhex - -
+scrubhex restic-cat-blob-stderr stdout
 cmp stdout err.txt
 
 -- password.txt --

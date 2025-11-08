@@ -1,7 +1,7 @@
 exec tail-server-log &
 
 exec restic-ceph-server --listen $WORK/restic.sock --listen 127.0.0.1:$PORT &server&
-exec wait4socket $WORK/restic.sock 127.0.0.1:$PORT
+wait4socket $WORK/restic.sock 127.0.0.1:$PORT
 
 exec curl --silent --request POST http://127.0.0.1:$PORT/?create=true
 
