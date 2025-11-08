@@ -1,4 +1,4 @@
-exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 
 mkdir files
 exec bin-file rand files/file0.bin 16384
@@ -34,9 +34,9 @@ exec bin-file rand files/file29.bin 16384
 exec bin-file rand files/file30.bin 16384
 exec bin-file rand files/file31.bin 16384
 
-exec restic backup files --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+exec restic backup files --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 
-exec restic list blobs --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt
+exec restic list blobs --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 
 stdin stdout
 exec bash ./parse-blob-id.sh
@@ -60,4 +60,4 @@ set -o errexit
 set -o pipefail
 
 read -r blob_id
-restic cat blob "$blob_id" --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file password.txt | wc --bytes
+restic cat blob "$blob_id" --option rclone.program=restic-ceph-server --option "rclone.args=$TEST_ARGS" --repo rclone: --password-file password.txt | wc --bytes

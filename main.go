@@ -223,10 +223,9 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func initLogger(verbose bool) error {
+func initLogger(verbose bool, logFilePath string) error {
 	logOutput := io.Writer(os.Stderr)
 
-	logFilePath := os.Getenv("__RESTIC_CEPH_SERVER_LOG_FILE")
 	if logFilePath != "" {
 		file, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
@@ -255,6 +254,7 @@ type Config struct {
 	AppendOnly      bool
 	Deadline        *time.Time
 	MaxIdleTime     time.Duration
+	LogFile         string
 }
 
 func parseConfig() (Config, error) {
@@ -265,6 +265,7 @@ func parseConfig() (Config, error) {
 	var appendOnly bool
 	var deadlineStr string
 	var maxIdleTime time.Duration
+	var logFile string
 
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
@@ -274,24 +275,14 @@ func parseConfig() (Config, error) {
 	flag.BoolVar(&appendOnly, "append-only", false, "enable append-only mode (delete allowed for locks only)")
 	flag.StringVar(&deadlineStr, "deadline", "", "exit at specific time (RFC3339 format, e.g., 2006-01-02T15:04:05Z)")
 	flag.DurationVar(&maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
+	flag.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
 	flag.Parse()
-
-	if !verbose {
-		envVerbose := os.Getenv("__RESTIC_CEPH_VERBOSE")
-		verbose = envVerbose == "1" || strings.EqualFold(envVerbose, "true") || strings.EqualFold(envVerbose, "yes")
-	}
 
 	var deadline *time.Time
 	if deadlineStr != "" {
 		parsed, err := time.Parse(time.RFC3339, deadlineStr)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid --deadline value: %w", err)
-		}
-		deadline = &parsed
-	} else if envDeadline := os.Getenv("__RESTIC_CEPH_SERVER_DEADLINE"); envDeadline != "" {
-		parsed, err := time.Parse(time.RFC3339, envDeadline)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid __RESTIC_CEPH_SERVER_DEADLINE value %q: %w", envDeadline, err)
 		}
 		deadline = &parsed
 	}
@@ -304,6 +295,7 @@ func parseConfig() (Config, error) {
 		AppendOnly:      appendOnly,
 		Deadline:        deadline,
 		MaxIdleTime:     maxIdleTime,
+		LogFile:         logFile,
 	}, nil
 }
 
@@ -314,7 +306,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := initLogger(config.Verbose); err != nil {
+	if err := initLogger(config.Verbose, config.LogFile); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
