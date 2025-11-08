@@ -88,6 +88,10 @@ func TestScript(t *testing.T) {
 			"bin-file":           cmdBinFile,
 		},
 		Setup: func(env *testscript.Env) error {
+			scriptCtx, cancel := context.WithCancel(ctx)
+			env.Defer(cancel)
+			env.Values["ctx"] = scriptCtx
+
 			poolName, err := createCephPool(ctx, confPath)
 			if err != nil {
 				return err
@@ -142,6 +146,11 @@ func touchServerLog(t *testing.T, tmpDir string) (string, error) {
 }
 
 func cmdTailServerLog(ts *testscript.TestScript, neg bool, args []string) {
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
+
 	if neg {
 		ts.Fatalf("unsupported: ! tail-server-log")
 	}
@@ -150,9 +159,6 @@ func cmdTailServerLog(ts *testscript.TestScript, neg bool, args []string) {
 	if logFile == "" {
 		ts.Fatalf("TEST_LOG_FILE not set")
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	ts.Defer(cancel)
 
 	f, err := os.Open(logFile)
 	if err != nil {
@@ -499,8 +505,10 @@ func (ld *LogDemux) AttachTest(t *testing.T) func() {
 }
 
 func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
-	// Someday ts.Context() might be supported upstream
-	ctx := context.TODO()
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
 
 	if neg {
 		ts.Fatalf("unsupported: ! wait4socket")
@@ -550,8 +558,10 @@ func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
 }
 
 func cmdRadosObjectCount(ts *testscript.TestScript, neg bool, args []string) {
-	// Someday ts.Context() might be supported upstream
-	ctx := context.TODO()
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
 
 	if neg {
 		ts.Fatalf("unsupported: ! rados-object-count")
