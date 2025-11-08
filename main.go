@@ -916,8 +916,8 @@ func listBlobsInContext(w http.ResponseWriter, r *http.Request, ioctx *rados.IOC
 	useV2 := prefersBlobListV2(r)
 	prefix := blobType + "/"
 
-	var blobNames []string
-	var blobInfos []blobInfo
+	blobNames := []string{}
+	blobInfos := []blobInfo{}
 
 	for iter.Next() {
 		objectName := iter.Value()
