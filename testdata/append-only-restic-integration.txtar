@@ -4,7 +4,7 @@ env TZ=UTC
 env TEST_ARGS_APPEND_ONLY=--append-only $TEST_ARGS
 exec restic init --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS_APPEND_ONLY --repo rclone: --password-file password.txt
 
-exec mkdir data
+mkdir data
 exec touch data/foo.txt
 
 exec restic backup --time '2025-01-01 10:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS_APPEND_ONLY --repo rclone: --password-file password.txt
