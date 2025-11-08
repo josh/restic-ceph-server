@@ -5,28 +5,23 @@ wait4socket $WORK/restic.sock
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/' --output response1.txt
 stdout '400'
-exec cat response1.txt
-stdout 'missing required query parameter: create'
+grep 'missing required query parameter: create' response1.txt
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=false' --output response2.txt
 stdout '400'
-exec cat response2.txt
-stdout 'invalid value for create parameter'
+grep 'invalid value for create parameter' response2.txt
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=1' --output response3.txt
 stdout '400'
-exec cat response3.txt
-stdout 'invalid value for create parameter'
+grep 'invalid value for create parameter' response3.txt
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=True' --output response4.txt
 stdout '400'
-exec cat response4.txt
-stdout 'invalid value for create parameter'
+grep 'invalid value for create parameter' response4.txt
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=yes' --output response5.txt
 stdout '400'
-exec cat response5.txt
-stdout 'invalid value for create parameter'
+grep 'invalid value for create parameter' response5.txt
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=' --output response6.txt
 stdout '400'

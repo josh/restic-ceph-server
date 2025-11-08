@@ -27,7 +27,7 @@ cmp stdout data-before.txt
 
 exec restic prune --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 cp stdout prune-before.txt
-exec grep 'total prune:[[:space:]]*0 blobs / 0 B' prune-before.txt
+grep 'total prune:\s*0 blobs / 0 B' prune-before.txt
 
 exec restic forget --json --keep-last 1 --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 stdin stdout
@@ -36,9 +36,9 @@ cmp stdout forget.json
 
 exec restic prune --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 cp stdout prune-after.txt
-exec grep '^total prune:' prune-after.txt
-exec grep 'total prune:.* KiB' prune-after.txt
-! exec grep 'total prune:[[:space:]]*0 blobs' prune-after.txt
+grep '^total prune:' prune-after.txt
+grep 'total prune:.* KiB' prune-after.txt
+! grep 'total prune:\s*0 blobs' prune-after.txt
 
 rados-object-count data/
 cmp stdout data-after.txt
