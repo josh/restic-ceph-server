@@ -252,7 +252,6 @@ type Config struct {
 	UseStdio        bool
 	ShutdownTimeout time.Duration
 	AppendOnly      bool
-	Deadline        *time.Time
 	MaxIdleTime     time.Duration
 	LogFile         string
 }
@@ -263,7 +262,6 @@ func parseConfig() (Config, error) {
 	var useStdio bool
 	var shutdownTimeout time.Duration
 	var appendOnly bool
-	var deadlineStr string
 	var maxIdleTime time.Duration
 	var logFile string
 
@@ -273,19 +271,9 @@ func parseConfig() (Config, error) {
 	flag.BoolVar(&useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
 	flag.DurationVar(&shutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful shutdown timeout for listeners")
 	flag.BoolVar(&appendOnly, "append-only", false, "enable append-only mode (delete allowed for locks only)")
-	flag.StringVar(&deadlineStr, "deadline", "", "exit at specific time (RFC3339 format, e.g., 2006-01-02T15:04:05Z)")
 	flag.DurationVar(&maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
 	flag.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
 	flag.Parse()
-
-	var deadline *time.Time
-	if deadlineStr != "" {
-		parsed, err := time.Parse(time.RFC3339, deadlineStr)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid --deadline value: %w", err)
-		}
-		deadline = &parsed
-	}
 
 	return Config{
 		Verbose:         verbose,
@@ -293,7 +281,6 @@ func parseConfig() (Config, error) {
 		UseStdio:        useStdio,
 		ShutdownTimeout: shutdownTimeout,
 		AppendOnly:      appendOnly,
-		Deadline:        deadline,
 		MaxIdleTime:     maxIdleTime,
 		LogFile:         logFile,
 	}, nil
@@ -345,12 +332,6 @@ func main() {
 	mux.HandleFunc("POST /", h.createRepo)
 
 	ctx := context.Background()
-
-	if config.Deadline != nil {
-		var deadlineCancel context.CancelFunc
-		ctx, deadlineCancel = context.WithDeadline(ctx, *config.Deadline)
-		defer deadlineCancel()
-	}
 
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -409,11 +390,6 @@ func main() {
 			log.Printf("server error: %v\n", err)
 			os.Exit(1)
 		}
-	}
-
-	if ctx.Err() == context.DeadlineExceeded {
-		log.Printf("Server terminated due to deadline\n")
-		os.Exit(1)
 	}
 }
 
