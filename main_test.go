@@ -12,12 +12,14 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -33,6 +35,7 @@ func TestMain(m *testing.M) {
 		"rados-object-count": radosObjectCount,
 		"scrubhex":           scrubHex,
 		"bin-file":           binFile,
+		"tail-server-log":    tailServerLog,
 	})
 }
 
@@ -86,7 +89,6 @@ func TestScript(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			go tailServerLog(t, ctx, logFile)
 			env.Setenv("RESTIC_CEPH_SERVER_LOG_FILE", logFile)
 
 			var testArgs string
@@ -139,41 +141,41 @@ func touchServerLog(t *testing.T, tmpDir string) (string, error) {
 	return logFile, nil
 }
 
-func tailServerLog(t *testing.T, ctx context.Context, logFile string) {
-	t.Helper()
+func tailServerLog() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	logFile := os.Getenv("RESTIC_CEPH_SERVER_LOG_FILE")
 
 	f, err := os.Open(logFile)
 	if err != nil {
-		t.Errorf("failed to open log file for reading: %v", err)
-		return
+		fmt.Fprintf(os.Stderr, "failed to open log file for reading: %v\n", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
-			t.Errorf("failed to close log file: %v", err)
+			fmt.Fprintf(os.Stderr, "failed to close log file: %v\n", err)
+			os.Exit(1)
 		}
 	}()
 
 	reader := bufio.NewReader(f)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			for {
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					if err == io.EOF {
-						break
-					}
-					t.Errorf("failed to read from log file: %v", err)
-					return
+		default:
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					time.Sleep(100 * time.Millisecond)
+					continue
 				}
-				line = strings.TrimSuffix(line, "\n")
-				t.Logf("[restic-ceph-server] %s", line)
+				fmt.Fprintf(os.Stderr, "failed to read from log file: %v\n", err)
+				os.Exit(1)
 			}
+			fmt.Printf("[restic-ceph-server] %s", line)
 		}
 	}
 }

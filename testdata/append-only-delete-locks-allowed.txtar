@@ -1,3 +1,5 @@
+exec tail-server-log &
+
 exec restic-ceph-server --append-only --listen $WORK/restic.sock &server&
 exec wait4socket $WORK/restic.sock
 

@@ -1,3 +1,5 @@
+exec tail-server-log &
+
 exec restic init --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
 
 exec restic backup data-original --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
