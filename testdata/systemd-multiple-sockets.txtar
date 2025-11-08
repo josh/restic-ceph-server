@@ -1,4 +1,4 @@
-exec tail-server-log &
+tail-server-log
 
 exec systemd-socket-activate --setenv=CEPH_POOL --setenv=CEPH_CONF --setenv=TEST_LOG_FILE --listen=127.0.0.1:$PORT --listen=$WORK/restic.sock restic-ceph-server &server&
 wait4socket 127.0.0.1:$PORT $WORK/restic.sock

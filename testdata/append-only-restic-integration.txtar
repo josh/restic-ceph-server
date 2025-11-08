@@ -1,4 +1,4 @@
-exec tail-server-log &
+tail-server-log
 
 env TZ=UTC
 exec restic init --option rclone.program=restic-ceph-server --option rclone.args='--append-only' --repo rclone: --password-file password.txt
