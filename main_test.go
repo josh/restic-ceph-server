@@ -94,13 +94,7 @@ func TestScript(t *testing.T) {
 			}
 			env.Setenv("RESTIC_CEPH_SERVER_LOG_FILE", logFile)
 
-			var testArgs string
-			if !deadline.IsZero() {
-				env.Setenv("TEST_DEADLINE", deadline.Format(time.RFC3339))
-				testArgs = fmt.Sprintf("--verbose --deadline=%s --log-file=%s", deadline.Format(time.RFC3339), logFile)
-			} else {
-				testArgs = fmt.Sprintf("--verbose --log-file=%s", logFile)
-			}
+			testArgs := fmt.Sprintf("--verbose --log-file=%s", logFile)
 			env.Setenv("TEST_ARGS", testArgs)
 			env.Setenv("CEPH_CONF", confPath)
 			env.Setenv("CEPH_POOL", poolName)
