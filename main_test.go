@@ -30,9 +30,16 @@ var cephDaemonLogs *LogDemux
 
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
-		"restic-ceph-server": main,
+		"restic-ceph-server": mainVerbose,
 		"tail-server-log":    tailServerLog,
 	})
+}
+
+// Wrap main.go#main so verbose logging is always enabled during tests
+func mainVerbose() {
+	logFileArg := "--log-file=" + os.Getenv("TEST_LOG_FILE")
+	os.Args = append([]string{os.Args[0], "--verbose", logFileArg}, os.Args[1:]...)
+	main()
 }
 
 const timeoutGracePeriod = 2 * time.Second
@@ -92,10 +99,8 @@ func TestScript(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			env.Setenv("RESTIC_CEPH_SERVER_LOG_FILE", logFile)
+			env.Setenv("TEST_LOG_FILE", logFile)
 
-			testArgs := fmt.Sprintf("--verbose --log-file=%s", logFile)
-			env.Setenv("TEST_ARGS", testArgs)
 			env.Setenv("CEPH_CONF", confPath)
 			env.Setenv("CEPH_POOL", poolName)
 			env.Setenv("RESTIC_CACHE_DIR", filepath.Join(t.TempDir(), "restic-cache"))
@@ -142,7 +147,7 @@ func tailServerLog() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logFile := os.Getenv("RESTIC_CEPH_SERVER_LOG_FILE")
+	logFile := os.Getenv("TEST_LOG_FILE")
 
 	f, err := os.Open(logFile)
 	if err != nil {
