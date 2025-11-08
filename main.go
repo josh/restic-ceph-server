@@ -45,7 +45,7 @@ var (
 	errHashMismatch      = errors.New("hash mismatch")
 	errWriteVerification = errors.New("write verification failed")
 	errObjectTooLarge    = errors.New("object too large")
-	hexBlobIDRegex       = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+	hexBlobIDRegex       = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 )
 
 type Handler struct {
@@ -917,6 +917,9 @@ func listBlobsInContext(w http.ResponseWriter, r *http.Request, ioctx *rados.IOC
 		objectName := iter.Value()
 		if objectName != "" && strings.HasPrefix(objectName, prefix) {
 			blobID := strings.TrimPrefix(objectName, prefix)
+			if !hexBlobIDRegex.MatchString(blobID) {
+				continue
+			}
 			if useV2 {
 				stat, err := ioctx.Stat(objectName)
 				if err != nil {
