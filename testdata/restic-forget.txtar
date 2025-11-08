@@ -1,16 +1,16 @@
 exec tail-server-log &
 
 env TZ=UTC
-exec restic init --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
+exec restic init --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
 
 mkdir $WORK/data
 exec touch $WORK/data/foo.txt
 
-exec restic backup --time '2025-01-01 10:00:00' $WORK/data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
-exec restic backup --time '2025-01-01 11:00:00' $WORK/data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
-exec restic backup --time '2025-01-01 12:00:00' $WORK/data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
+exec restic backup --time '2025-01-01 10:00:00' $WORK/data --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
+exec restic backup --time '2025-01-01 11:00:00' $WORK/data --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
+exec restic backup --time '2025-01-01 12:00:00' $WORK/data --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
 
-exec restic snapshots --json --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
+exec restic snapshots --json --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
 stdin stdout
 exec jq '[.[] | {time: .time, short_id: .short_id}]'
 stdin stdout
@@ -20,14 +20,14 @@ cmp stdout snapshots-before.json
 rados-object-count snapshots/
 cmp stdout snapshots-before.txt
 
-exec restic forget --json --keep-last 1 --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
+exec restic forget --json --keep-last 1 --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
 stdin stdout
 exec jq '.[0] | {keep: [.keep[] | {time: .time, short_id: .short_id}], remove: [.remove[] | {time: .time, short_id: .short_id}]}'
 stdin stdout
 scrubhex stdout stdout
 cmp stdout forget-out.json
 
-exec restic snapshots --json --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
+exec restic snapshots --json --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
 stdin stdout
 exec jq '[.[] | {time: .time, short_id: .short_id}]'
 stdin stdout

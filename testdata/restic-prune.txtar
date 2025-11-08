@@ -3,38 +3,38 @@ exec tail-server-log &
 env TZ=UTC
 env RESTIC_PROGRESS_FPS=0
 
-exec restic init --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
+exec restic init --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
 
 rm -r data
 mkdir data
 bin-file rand data/file-a.bin 16384
 bin-file rand data/file-b.bin 16384
-exec restic backup --time '2025-01-01 10:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
+exec restic backup --time '2025-01-01 10:00:00' data --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
 
 rm -r data
 mkdir data
 bin-file rand data/file-a.bin 16384
 bin-file rand data/file-c.bin 16384
-exec restic backup --time '2025-01-01 11:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
+exec restic backup --time '2025-01-01 11:00:00' data --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
 
 rm -r data
 mkdir data
 bin-file rand data/file-d.bin 16384
-exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
+exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
 
 rados-object-count data/
 cmp stdout data-before.txt
 
-exec restic prune --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
+exec restic prune --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
 cp stdout prune-before.txt
 grep 'total prune:\s*0 blobs / 0 B' prune-before.txt
 
-exec restic forget --json --keep-last 1 --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
+exec restic forget --json --keep-last 1 --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
 stdin stdout
 exec jq '.[0] | {keep: (.keep | length), remove: (.remove | length)}'
 cmp stdout forget.json
 
-exec restic prune --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
+exec restic prune --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
 cp stdout prune-after.txt
 grep '^total prune:' prune-after.txt
 grep 'total prune:.* KiB' prune-after.txt
