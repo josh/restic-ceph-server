@@ -1,6 +1,6 @@
-exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
 
-! exec restic cat blob 0000000000000000000000000000000000000000000000000000000000000000 --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+! exec restic cat blob 0000000000000000000000000000000000000000000000000000000000000000 --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
 cmp stdout out.txt
 
 cp stderr restic-cat-blob-stderr

@@ -87,12 +87,16 @@ func TestScript(t *testing.T) {
 				return err
 			}
 			go tailServerLog(t, ctx, logFile)
-			env.Setenv("__RESTIC_CEPH_SERVER_LOG_FILE", logFile)
-			env.Setenv("__RESTIC_CEPH_VERBOSE", "1")
+			env.Setenv("RESTIC_CEPH_SERVER_LOG_FILE", logFile)
 
+			var testArgs string
 			if !deadline.IsZero() {
-				env.Setenv("__RESTIC_CEPH_SERVER_DEADLINE", deadline.Format(time.RFC3339))
+				env.Setenv("TEST_DEADLINE", deadline.Format(time.RFC3339))
+				testArgs = fmt.Sprintf("--verbose --deadline=%s --log-file=%s", deadline.Format(time.RFC3339), logFile)
+			} else {
+				testArgs = fmt.Sprintf("--verbose --log-file=%s", logFile)
 			}
+			env.Setenv("TEST_ARGS", testArgs)
 			env.Setenv("CEPH_CONF", confPath)
 			env.Setenv("CEPH_POOL", poolName)
 			env.Setenv("RESTIC_CACHE_DIR", filepath.Join(t.TempDir(), "restic-cache"))

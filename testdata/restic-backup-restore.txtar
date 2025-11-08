@@ -1,8 +1,8 @@
-exec restic init --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+exec restic init --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
 
-exec restic backup data-original --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+exec restic backup data-original --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
 
-exec restic restore latest --target $WORK/data-restored --option rclone.program=restic-ceph-server --option rclone.args= --repo rclone: --password-file $WORK/password.txt
+exec restic restore latest --target $WORK/data-restored --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file $WORK/password.txt
 
 cmp $WORK/data-restored/data-original/foo.txt data-original/foo.txt
 cmp $WORK/data-restored/data-original/subdir/bar.txt data-original/subdir/bar.txt

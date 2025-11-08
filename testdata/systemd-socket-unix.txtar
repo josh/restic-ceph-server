@@ -1,4 +1,4 @@
-exec systemd-socket-activate --setenv=CEPH_POOL --setenv=CEPH_CONF --setenv=__RESTIC_CEPH_VERBOSE --setenv=__RESTIC_CEPH_SERVER_DEADLINE --setenv=__RESTIC_CEPH_SERVER_LOG_FILE --listen=$WORK/restic.sock restic-ceph-server &server&
+exec systemd-socket-activate --setenv=CEPH_POOL --setenv=CEPH_CONF --listen=$WORK/restic.sock restic-ceph-server --verbose --deadline=$TEST_DEADLINE --log-file=$RESTIC_CEPH_SERVER_LOG_FILE &server&
 exec wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
