@@ -11,13 +11,13 @@ exec restic backup --time '2025-01-01 10:00:00' data --option rclone.program=res
 exec restic backup --time '2025-01-01 11:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS_APPEND_ONLY --repo rclone: --password-file password.txt
 exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS_APPEND_ONLY --repo rclone: --password-file password.txt
 
-exec rados-object-count snapshots/
+rados-object-count snapshots/
 cmp stdout snapshots-before.txt
 
 exec restic forget --keep-last 1 --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS_APPEND_ONLY --repo rclone: --password-file password.txt
 stderr '403'
 
-exec rados-object-count snapshots/
+rados-object-count snapshots/
 cmp stdout snapshots-after.txt
 
 -- password.txt --

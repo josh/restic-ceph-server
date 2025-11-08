@@ -1,11 +1,11 @@
 exec tail-server-log &
 
 exec restic-ceph-server --listen $WORK/restic.sock &server&
-exec wait4socket $WORK/restic.sock
+wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
 
-exec bin-file zeros large-blob 17000000
+bin-file zeros large-blob 17000000
 
 stdin large-blob
 exec wc -c

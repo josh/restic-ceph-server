@@ -3,38 +3,38 @@ exec tail-server-log &
 exec restic init --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 
 mkdir files
-exec bin-file rand files/file0.bin 16384
-exec bin-file rand files/file1.bin 16384
-exec bin-file rand files/file2.bin 16384
-exec bin-file rand files/file3.bin 16384
-exec bin-file rand files/file4.bin 16384
-exec bin-file rand files/file5.bin 16384
-exec bin-file rand files/file6.bin 16384
-exec bin-file rand files/file7.bin 16384
-exec bin-file rand files/file8.bin 16384
-exec bin-file rand files/file9.bin 16384
-exec bin-file rand files/file10.bin 16384
-exec bin-file rand files/file11.bin 16384
-exec bin-file rand files/file12.bin 16384
-exec bin-file rand files/file13.bin 16384
-exec bin-file rand files/file14.bin 16384
-exec bin-file rand files/file15.bin 16384
-exec bin-file rand files/file16.bin 16384
-exec bin-file rand files/file17.bin 16384
-exec bin-file rand files/file18.bin 16384
-exec bin-file rand files/file19.bin 16384
-exec bin-file rand files/file20.bin 16384
-exec bin-file rand files/file21.bin 16384
-exec bin-file rand files/file22.bin 16384
-exec bin-file rand files/file23.bin 16384
-exec bin-file rand files/file24.bin 16384
-exec bin-file rand files/file25.bin 16384
-exec bin-file rand files/file26.bin 16384
-exec bin-file rand files/file27.bin 16384
-exec bin-file rand files/file28.bin 16384
-exec bin-file rand files/file29.bin 16384
-exec bin-file rand files/file30.bin 16384
-exec bin-file rand files/file31.bin 16384
+bin-file rand files/file0.bin 16384
+bin-file rand files/file1.bin 16384
+bin-file rand files/file2.bin 16384
+bin-file rand files/file3.bin 16384
+bin-file rand files/file4.bin 16384
+bin-file rand files/file5.bin 16384
+bin-file rand files/file6.bin 16384
+bin-file rand files/file7.bin 16384
+bin-file rand files/file8.bin 16384
+bin-file rand files/file9.bin 16384
+bin-file rand files/file10.bin 16384
+bin-file rand files/file11.bin 16384
+bin-file rand files/file12.bin 16384
+bin-file rand files/file13.bin 16384
+bin-file rand files/file14.bin 16384
+bin-file rand files/file15.bin 16384
+bin-file rand files/file16.bin 16384
+bin-file rand files/file17.bin 16384
+bin-file rand files/file18.bin 16384
+bin-file rand files/file19.bin 16384
+bin-file rand files/file20.bin 16384
+bin-file rand files/file21.bin 16384
+bin-file rand files/file22.bin 16384
+bin-file rand files/file23.bin 16384
+bin-file rand files/file24.bin 16384
+bin-file rand files/file25.bin 16384
+bin-file rand files/file26.bin 16384
+bin-file rand files/file27.bin 16384
+bin-file rand files/file28.bin 16384
+bin-file rand files/file29.bin 16384
+bin-file rand files/file30.bin 16384
+bin-file rand files/file31.bin 16384
 
 exec restic backup files --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 

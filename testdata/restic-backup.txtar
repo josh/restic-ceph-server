@@ -6,10 +6,10 @@ exec restic backup --json $WORK --option rclone.program=restic-ceph-server --opt
 stdin stdout
 exec jq -s '[.[] | select(.message_type == "summary")] | .[0] | {files_new: .files_new, files_changed: .files_changed, files_unmodified: .files_unmodified, dirs_new: .dirs_new, dirs_changed: .dirs_changed, dirs_unmodified: .dirs_unmodified, snapshot_id: .snapshot_id}'
 stdin stdout
-exec scrubhex - -
+scrubhex stdout stdout
 cmp stdout out.json
 
-exec rados-object-count snapshots/
+rados-object-count snapshots/
 cmp stdout snapshots.txt
 
 -- password.txt --

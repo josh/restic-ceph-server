@@ -1,7 +1,7 @@
 exec tail-server-log &
 
 exec systemd-socket-activate --setenv=CEPH_POOL --setenv=CEPH_CONF --listen=127.0.0.1:$PORT restic-ceph-server --verbose --deadline=$TEST_DEADLINE --log-file=$RESTIC_CEPH_SERVER_LOG_FILE &server&
-exec wait4socket 127.0.0.1:$PORT
+wait4socket 127.0.0.1:$PORT
 
 exec curl --silent --request POST http://127.0.0.1:$PORT/?create=true
 

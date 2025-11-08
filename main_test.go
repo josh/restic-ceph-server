@@ -31,10 +31,6 @@ var cephDaemonLogs *LogDemux
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
 		"restic-ceph-server": main,
-		"wait4socket":        waitForSocket,
-		"rados-object-count": radosObjectCount,
-		"scrubhex":           scrubHex,
-		"bin-file":           binFile,
 		"tail-server-log":    tailServerLog,
 	})
 }
@@ -80,6 +76,12 @@ func TestScript(t *testing.T) {
 		RequireExplicitExec: true,
 		UpdateScripts:       updateScripts,
 		Deadline:            deadline,
+		Cmds: map[string]func(*testscript.TestScript, bool, []string){
+			"wait4socket":        cmdWait4socket,
+			"rados-object-count": cmdRadosObjectCount,
+			"scrubhex":           cmdScrubHex,
+			"bin-file":           cmdBinFile,
+		},
 		Setup: func(env *testscript.Env) error {
 			poolName, err := createCephPool(ctx, confPath)
 			if err != nil {
@@ -161,16 +163,17 @@ func tailServerLog() {
 	}()
 
 	reader := bufio.NewReader(f)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
+		case <-ticker.C:
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
-					time.Sleep(100 * time.Millisecond)
 					continue
 				}
 				fmt.Fprintf(os.Stderr, "failed to read from log file: %v\n", err)
@@ -491,68 +494,86 @@ func (ld *LogDemux) AttachTest(t *testing.T) func() {
 	}
 }
 
-func waitForSocket() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: wait4socket <endpoint> [<endpoint>...]\n")
-		os.Exit(1)
+func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
+	// Someday ts.Context() might be supported upstream
+	ctx := context.TODO()
+
+	if neg {
+		ts.Fatalf("unsupported: ! wait4socket")
+	}
+	if len(args) < 1 {
+		ts.Fatalf("usage: wait4socket <endpoint> [<endpoint>...]")
 	}
 
-	endpoints := os.Args[1:]
+	for _, endpoint := range args {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
 
-	for _, endpoint := range endpoints {
+		timeout := time.After(3 * time.Second)
 		var success bool
 
 		if strings.Contains(endpoint, ":") {
-			for i := 0; i < 30; i++ {
-				conn, err := net.DialTimeout("tcp", endpoint, 100*time.Millisecond)
-				if err == nil {
-					_ = conn.Close()
-					success = true
-					break
+			for !success {
+				select {
+				case <-ctx.Done():
+					ts.Fatalf("context cancelled while waiting for %s: %v", endpoint, ctx.Err())
+				case <-timeout:
+					ts.Fatalf("TCP listener did not respond in time: %s", endpoint)
+				case <-ticker.C:
+					conn, err := net.DialTimeout("tcp", endpoint, 100*time.Millisecond)
+					if err == nil {
+						_ = conn.Close()
+						success = true
+					}
 				}
-				time.Sleep(100 * time.Millisecond)
-			}
-			if !success {
-				fmt.Fprintf(os.Stderr, "TCP listener did not respond in time: %s\n", endpoint)
-				os.Exit(1)
 			}
 		} else {
-			for i := 0; i < 30; i++ {
-				info, err := os.Stat(endpoint)
-				if err == nil && info.Mode()&os.ModeSocket != 0 {
-					success = true
-					break
+			for !success {
+				select {
+				case <-ctx.Done():
+					ts.Fatalf("context cancelled while waiting for %s: %v", endpoint, ctx.Err())
+				case <-timeout:
+					ts.Fatalf("socket did not appear in time: %s", endpoint)
+				case <-ticker.C:
+					info, err := os.Stat(endpoint)
+					if err == nil && info.Mode()&os.ModeSocket != 0 {
+						success = true
+					}
 				}
-				time.Sleep(100 * time.Millisecond)
-			}
-			if !success {
-				fmt.Fprintf(os.Stderr, "socket did not appear in time: %s\n", endpoint)
-				os.Exit(1)
 			}
 		}
 	}
-
-	os.Exit(0)
 }
 
-func radosObjectCount() {
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "usage: rados-object-count <prefix>\n")
-		os.Exit(1)
+func cmdRadosObjectCount(ts *testscript.TestScript, neg bool, args []string) {
+	// Someday ts.Context() might be supported upstream
+	ctx := context.TODO()
+
+	if neg {
+		ts.Fatalf("unsupported: ! rados-object-count")
+	}
+	if len(args) != 1 {
+		ts.Fatalf("usage: rados-object-count <prefix>")
 	}
 
-	prefix := os.Args[1]
-	pool := os.Getenv("CEPH_POOL")
+	prefix := args[0]
+	pool := ts.Getenv("CEPH_POOL")
 	if pool == "" {
-		fmt.Fprintf(os.Stderr, "CEPH_POOL environment variable not set\n")
-		os.Exit(1)
+		ts.Fatalf("CEPH_POOL environment variable not set")
 	}
 
-	cmd := exec.Command("rados", "--pool", pool, "ls")
-	output, err := cmd.Output()
+	confPath := ts.Getenv("CEPH_CONF")
+	if confPath == "" {
+		ts.Fatalf("CEPH_CONF environment variable not set")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "rados", "--conf", confPath, "--pool", pool, "ls")
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to list rados objects: %v\n", err)
-		os.Exit(1)
+		ts.Fatalf("failed to list rados objects: %v\noutput: %s", err, string(output))
 	}
 
 	count := 0
@@ -565,37 +586,37 @@ func radosObjectCount() {
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to scan output: %v\n", err)
-		os.Exit(1)
+		ts.Fatalf("failed to scan output: %v", err)
 	}
 
-	fmt.Printf("%d\n", count)
-	os.Exit(0)
+	_, _ = fmt.Fprintf(ts.Stdout(), "%d\n", count)
 }
 
-func scrubHex() {
-	if len(os.Args) != 3 {
-		fmt.Fprintf(os.Stderr, "usage: scrubhex <input-file> <output-file>\n")
-		fmt.Fprintf(os.Stderr, "  use '-' for stdin/stdout\n")
-		os.Exit(1)
+func cmdScrubHex(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! scrubhex")
+	}
+	if len(args) != 2 {
+		ts.Fatalf("usage: scrubhex <input-file> <output-file>\n  use 'stdin' for reading previous command output, 'stdout' for writing to stdout")
 	}
 
-	inputPath := os.Args[1]
-	outputPath := os.Args[2]
+	inputPath := args[0]
+	outputPath := args[1]
 
 	var input []byte
 	var err error
-	if inputPath == "-" {
-		input, err = io.ReadAll(os.Stdin)
+
+	switch inputPath {
+	case "stdin":
+		input = []byte(ts.ReadFile("stdin"))
+	case "stdout":
+		input = []byte(ts.ReadFile("stdout"))
+	case "stderr":
+		input = []byte(ts.ReadFile("stderr"))
+	default:
+		input, err = os.ReadFile(ts.MkAbs(inputPath))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to read stdin: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		input, err = os.ReadFile(inputPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to read input file: %v\n", err)
-			os.Exit(1)
+			ts.Fatalf("failed to read input file: %v", err)
 		}
 	}
 
@@ -605,53 +626,47 @@ func scrubHex() {
 	hexPattern := regexp.MustCompile(`[0-9a-f]{8,}`)
 	output = hexPattern.ReplaceAll(output, []byte("[HEX]"))
 
-	if outputPath == "-" {
-		_, err = os.Stdout.Write(output)
+	switch outputPath {
+	case "stdout":
+		_, _ = ts.Stdout().Write(output)
+	case "stderr":
+		_, _ = ts.Stderr().Write(output)
+	default:
+		err = os.WriteFile(ts.MkAbs(outputPath), output, 0o644)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to write to stdout: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		err = os.WriteFile(outputPath, output, 0o644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to write output file: %v\n", err)
-			os.Exit(1)
+			ts.Fatalf("failed to write output file: %v", err)
 		}
 	}
-
-	os.Exit(0)
 }
 
-func binFile() {
-	if len(os.Args) != 4 {
-		fmt.Fprintf(os.Stderr, "usage: bin-file <rand|zeros|ones> <path> <size-bytes>\n")
-		os.Exit(1)
+func cmdBinFile(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! bin-file")
+	}
+	if len(args) != 3 {
+		ts.Fatalf("usage: bin-file <rand|zeros|ones> <path> <size-bytes>")
 	}
 
-	mode := os.Args[1]
-	path := os.Args[2]
-	sizeStr := os.Args[3]
+	mode := args[0]
+	path := args[1]
+	sizeStr := args[2]
 
 	if mode != "rand" && mode != "zeros" && mode != "ones" {
-		fmt.Fprintf(os.Stderr, "mode must be rand, zeros, or ones\n")
-		os.Exit(1)
+		ts.Fatalf("mode must be rand, zeros, or ones")
 	}
 
 	size, err := strconv.ParseInt(sizeStr, 10, 64)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid size: %v\n", err)
-		os.Exit(1)
+		ts.Fatalf("invalid size: %v", err)
 	}
 
 	if size < 0 {
-		fmt.Fprintf(os.Stderr, "size must be non-negative\n")
-		os.Exit(1)
+		ts.Fatalf("size must be non-negative")
 	}
 
-	file, err := os.Create(path)
+	file, err := os.Create(ts.MkAbs(path))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create file: %v\n", err)
-		os.Exit(1)
+		ts.Fatalf("failed to create file: %v", err)
 	}
 	defer func() { _ = file.Close() }()
 
@@ -667,11 +682,8 @@ func binFile() {
 
 	_, err = io.Copy(file, reader)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write file: %v\n", err)
-		os.Exit(1)
+		ts.Fatalf("failed to write file: %v", err)
 	}
-
-	os.Exit(0)
 }
 
 type zeroReader struct{}

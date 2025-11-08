@@ -7,22 +7,22 @@ exec restic init --option rclone.program=restic-ceph-server --option rclone.args
 
 rm -r data
 mkdir data
-exec bin-file rand data/file-a.bin 16384
-exec bin-file rand data/file-b.bin 16384
+bin-file rand data/file-a.bin 16384
+bin-file rand data/file-b.bin 16384
 exec restic backup --time '2025-01-01 10:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 
 rm -r data
 mkdir data
-exec bin-file rand data/file-a.bin 16384
-exec bin-file rand data/file-c.bin 16384
+bin-file rand data/file-a.bin 16384
+bin-file rand data/file-c.bin 16384
 exec restic backup --time '2025-01-01 11:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 
 rm -r data
 mkdir data
-exec bin-file rand data/file-d.bin 16384
+bin-file rand data/file-d.bin 16384
 exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
 
-exec rados-object-count data/
+rados-object-count data/
 cmp stdout data-before.txt
 
 exec restic prune --option rclone.program=restic-ceph-server --option rclone.args=$TEST_ARGS --repo rclone: --password-file password.txt
@@ -40,7 +40,7 @@ exec grep '^total prune:' prune-after.txt
 exec grep 'total prune:.* KiB' prune-after.txt
 ! exec grep 'total prune:[[:space:]]*0 blobs' prune-after.txt
 
-exec rados-object-count data/
+rados-object-count data/
 cmp stdout data-after.txt
 
 -- password.txt --
