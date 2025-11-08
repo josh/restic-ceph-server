@@ -46,6 +46,7 @@ var (
 	errWriteVerification = errors.New("write verification failed")
 	errObjectTooLarge    = errors.New("object too large")
 	hexBlobIDRegex       = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+	errClientAborted     = errors.New("client aborted request")
 )
 
 type Handler struct {
@@ -96,6 +97,8 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 		http.Error(w, "object already exists", http.StatusForbidden)
 	case errors.Is(err, errHashMismatch):
 		http.Error(w, "hash mismatch", http.StatusBadRequest)
+	case errors.Is(err, errClientAborted):
+		http.Error(w, "client aborted request", http.StatusBadRequest)
 	case errors.Is(err, errWriteVerification):
 		http.Error(w, "write verification failed", http.StatusInternalServerError)
 	case errors.Is(err, errObjectTooLarge):
@@ -626,6 +629,9 @@ func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOCo
 		if err != nil {
 			if err == io.EOF {
 				break
+			}
+			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.Canceled) {
+				return errClientAborted
 			}
 			return fmt.Errorf("read request body: %w", err)
 		}
