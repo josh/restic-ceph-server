@@ -12,14 +12,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -31,7 +29,6 @@ var cephDaemonLogs *LogDemux
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
 		"restic-ceph-server": mainVerbose,
-		"tail-server-log":    tailServerLog,
 	})
 }
 
@@ -84,6 +81,7 @@ func TestScript(t *testing.T) {
 		UpdateScripts:       updateScripts,
 		Deadline:            deadline,
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
+			"tail-server-log":    cmdTailServerLog,
 			"wait4socket":        cmdWait4socket,
 			"rados-object-count": cmdRadosObjectCount,
 			"scrubhex":           cmdScrubHex,
@@ -143,44 +141,51 @@ func touchServerLog(t *testing.T, tmpDir string) (string, error) {
 	return logFile, nil
 }
 
-func tailServerLog() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+func cmdTailServerLog(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! tail-server-log")
+	}
 
-	logFile := os.Getenv("TEST_LOG_FILE")
+	logFile := ts.Getenv("TEST_LOG_FILE")
+	if logFile == "" {
+		ts.Fatalf("TEST_LOG_FILE not set")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ts.Defer(cancel)
 
 	f, err := os.Open(logFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open log file for reading: %v\n", err)
-		os.Exit(1)
+		ts.Fatalf("failed to open log file for reading: %v", err)
 	}
-	defer func() {
+	ts.Defer(func() {
 		if err := f.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to close log file: %v\n", err)
-			os.Exit(1)
+			ts.Logf("failed to close log file: %v", err)
+		}
+	})
+
+	go func() {
+		reader := bufio.NewReader(f)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					if err == io.EOF {
+						continue
+					}
+					ts.Logf("tail-server-log: failed to read from log file: %v", err)
+					return
+				}
+				ts.Logf("[restic-ceph-server] %s", strings.TrimRight(line, "\n"))
+			}
 		}
 	}()
-
-	reader := bufio.NewReader(f)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				if err == io.EOF {
-					continue
-				}
-				fmt.Fprintf(os.Stderr, "failed to read from log file: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("[restic-ceph-server] %s", line)
-		}
-	}
 }
 
 func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string, error) {
