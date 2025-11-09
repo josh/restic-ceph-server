@@ -32,8 +32,18 @@ type Handler struct {
 	appendOnly bool
 }
 
-func (h *Handler) openIOContext() (*rados.IOContext, error) {
-	return h.conn.OpenIOContext(h.poolName)
+func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*rados.IOContext, bool) {
+	ioctx, err := h.conn.OpenIOContext(h.poolName)
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.NotFound(w, r)
+		} else {
+			log.Printf("failed to open IO context: %v\n", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+		return nil, false
+	}
+	return ioctx, true
 }
 
 func isValidBlobType(blobType string) bool {
@@ -89,14 +99,8 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 func (h *Handler) checkConfig(w http.ResponseWriter, r *http.Request) {
 	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -109,14 +113,8 @@ func (h *Handler) checkConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -129,14 +127,8 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
 	verboseLog.Printf("%v %v\n", r.Method, r.URL)
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -155,14 +147,8 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -192,10 +178,8 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -212,14 +196,8 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -245,14 +223,8 @@ func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -279,14 +251,8 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -313,14 +279,8 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
@@ -353,14 +313,8 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, err := h.openIOContext()
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("failed to open IO context: %v\n", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	ioctx, ok := h.openIOContext(w, r)
+	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
