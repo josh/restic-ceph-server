@@ -52,6 +52,11 @@ func initLogger(verbose bool, logFilePath string) error {
 	return nil
 }
 
+func parseBoolEnv(key string) bool {
+	val := os.Getenv(key)
+	return val == "true" || val == "1" || val == "yes"
+}
+
 type Config struct {
 	Verbose         bool
 	Listeners       listenerFlags
@@ -62,6 +67,8 @@ type Config struct {
 	LogFile         string
 	KeyringPath     string
 	ClientID        string
+	PoolName        string
+	CephConf        string
 }
 
 func parseConfig() (Config, error) {
@@ -74,6 +81,8 @@ func parseConfig() (Config, error) {
 	var logFile string
 	var keyringPath string
 	var clientID string
+	var poolName string
+	var cephConf string
 
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
@@ -85,7 +94,21 @@ func parseConfig() (Config, error) {
 	flag.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
 	flag.StringVar(&keyringPath, "keyring", "", "path to Ceph keyring file")
 	flag.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
+	flag.StringVar(&poolName, "pool", "", "Ceph pool name")
+	flag.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
 	flag.Parse()
+
+	if !verbose {
+		verbose = parseBoolEnv("CEPH_SERVER_VERBOSE")
+	}
+
+	if !appendOnly {
+		appendOnly = parseBoolEnv("CEPH_SERVER_APPEND_ONLY")
+	}
+
+	if logFile == "" {
+		logFile = os.Getenv("CEPH_SERVER_LOG_FILE")
+	}
 
 	if keyringPath == "" {
 		keyringPath = os.Getenv("CEPH_KEYRING")
@@ -93,6 +116,14 @@ func parseConfig() (Config, error) {
 
 	if clientID == "" {
 		clientID = os.Getenv("CEPH_ID")
+	}
+
+	if poolName == "" {
+		poolName = os.Getenv("CEPH_POOL")
+	}
+
+	if cephConf == "" {
+		cephConf = os.Getenv("CEPH_CONF")
 	}
 
 	return Config{
@@ -105,6 +136,8 @@ func parseConfig() (Config, error) {
 		LogFile:         logFile,
 		KeyringPath:     keyringPath,
 		ClientID:        clientID,
+		PoolName:        poolName,
+		CephConf:        cephConf,
 	}, nil
 }
 
@@ -120,9 +153,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	poolName := os.Getenv("CEPH_POOL")
-	if poolName == "" {
-		log.Printf("CEPH_POOL environment variable not set\n")
+	if config.PoolName == "" {
+		log.Printf("Ceph pool name not set (use --pool or CEPH_POOL)\n")
 		os.Exit(1)
 	}
 
@@ -134,7 +166,7 @@ func main() {
 
 	h := &Handler{
 		conn:       conn,
-		poolName:   poolName,
+		poolName:   config.PoolName,
 		appendOnly: config.AppendOnly,
 	}
 
@@ -221,8 +253,8 @@ func setupCephConn(config Config) (*rados.Conn, error) {
 		return nil, fmt.Errorf("failed to parse CEPH_ARGS: %v", err)
 	}
 
-	if cephConf := os.Getenv("CEPH_CONF"); cephConf != "" {
-		err = conn.ReadConfigFile(cephConf)
+	if config.CephConf != "" {
+		err = conn.ReadConfigFile(config.CephConf)
 	} else {
 		err = conn.ReadDefaultConfigFile()
 	}
