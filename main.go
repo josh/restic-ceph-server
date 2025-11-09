@@ -11,17 +11,10 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
-)
-
-var (
-	radosConn *rados.Conn
-	connOnce  sync.Once
-	connErr   error
 )
 
 var verboseLog *log.Logger
@@ -67,6 +60,8 @@ type Config struct {
 	AppendOnly      bool
 	MaxIdleTime     time.Duration
 	LogFile         string
+	KeyringPath     string
+	ClientID        string
 }
 
 func parseConfig() (Config, error) {
@@ -77,6 +72,8 @@ func parseConfig() (Config, error) {
 	var appendOnly bool
 	var maxIdleTime time.Duration
 	var logFile string
+	var keyringPath string
+	var clientID string
 
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
@@ -86,7 +83,17 @@ func parseConfig() (Config, error) {
 	flag.BoolVar(&appendOnly, "append-only", false, "enable append-only mode (delete allowed for locks only)")
 	flag.DurationVar(&maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
 	flag.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
+	flag.StringVar(&keyringPath, "keyring", "", "path to Ceph keyring file")
+	flag.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
 	flag.Parse()
+
+	if keyringPath == "" {
+		keyringPath = os.Getenv("CEPH_KEYRING")
+	}
+
+	if clientID == "" {
+		clientID = os.Getenv("CEPH_ID")
+	}
 
 	return Config{
 		Verbose:         verbose,
@@ -96,6 +103,8 @@ func parseConfig() (Config, error) {
 		AppendOnly:      appendOnly,
 		MaxIdleTime:     maxIdleTime,
 		LogFile:         logFile,
+		KeyringPath:     keyringPath,
+		ClientID:        clientID,
 	}, nil
 }
 
@@ -117,9 +126,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	conn, err := getCephConnection()
+	conn, err := setupCephConn(config)
 	if err != nil {
-		log.Printf("failed to get Ceph connection: %v\n", err)
+		log.Printf("failed to setup Ceph connection: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -194,17 +203,22 @@ func main() {
 	}
 }
 
-func getCephConnection() (*rados.Conn, error) {
-	connOnce.Do(func() {
-		radosConn, connErr = setupCephConn()
-	})
-	return radosConn, connErr
-}
+func setupCephConn(config Config) (*rados.Conn, error) {
+	var conn *rados.Conn
+	var err error
 
-func setupCephConn() (*rados.Conn, error) {
-	conn, err := rados.NewConn()
+	if config.ClientID != "" {
+		conn, err = rados.NewConnWithUser(config.ClientID)
+	} else {
+		conn, err = rados.NewConn()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RADOS connection: %v", err)
+	}
+
+	err = conn.ParseDefaultConfigEnv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse CEPH_ARGS: %v", err)
 	}
 
 	if cephConf := os.Getenv("CEPH_CONF"); cephConf != "" {
@@ -214,6 +228,13 @@ func setupCephConn() (*rados.Conn, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %v", err)
+	}
+
+	if config.KeyringPath != "" {
+		err = conn.SetConfigOption("keyring", config.KeyringPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set keyring path: %v", err)
+		}
 	}
 
 	err = conn.Connect()
