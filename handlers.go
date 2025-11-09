@@ -20,16 +20,13 @@ import (
 	"github.com/ceph/go-ceph/rados"
 )
 
-var (
+type Handler struct {
+	conn              *rados.Conn
+	poolName          string
+	appendOnly        bool
 	maxObjectSize     int64
 	maxObjectSizeOnce sync.Once
 	maxObjectSizeErr  error
-)
-
-type Handler struct {
-	conn       *rados.Conn
-	poolName   string
-	appendOnly bool
 }
 
 func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*rados.IOContext, bool) {
@@ -133,7 +130,7 @@ func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ioctx.Destroy()
 
-	if err := createRadosObject(w, r, ioctx, "config", "config"); err != nil {
+	if err := h.createRadosObject(w, r, ioctx, "config", "config"); err != nil {
 		h.handleRadosError(w, r, "config", err)
 	}
 }
@@ -287,7 +284,7 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 
 	objectName := blobType + "/" + blobID
 
-	if err := createRadosObject(w, r, ioctx, objectName, blobID); err != nil {
+	if err := h.createRadosObject(w, r, ioctx, objectName, blobID); err != nil {
 		h.handleRadosError(w, r, blobID, err)
 	}
 }
@@ -588,8 +585,8 @@ func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *
 	return nil
 }
 
-func createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string, hashID string) error {
-	maxSize, err := getMaxObjectSize()
+func (h *Handler) createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string, hashID string) error {
+	maxSize, err := h.getMaxObjectSize()
 	if err != nil {
 		return fmt.Errorf("failed to get max object size: %w", err)
 	}
@@ -686,27 +683,21 @@ func deleteRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object str
 	return nil
 }
 
-func getMaxObjectSize() (int64, error) {
-	maxObjectSizeOnce.Do(func() {
-		conn, err := getCephConnection()
+func (h *Handler) getMaxObjectSize() (int64, error) {
+	h.maxObjectSizeOnce.Do(func() {
+		sizeStr, err := h.conn.GetConfigOption("osd_max_object_size")
 		if err != nil {
-			maxObjectSizeErr = fmt.Errorf("failed to get connection: %w", err)
-			return
-		}
-
-		sizeStr, err := conn.GetConfigOption("osd_max_object_size")
-		if err != nil {
-			maxObjectSizeErr = fmt.Errorf("failed to read osd_max_object_size: %w", err)
+			h.maxObjectSizeErr = fmt.Errorf("failed to read osd_max_object_size: %w", err)
 			return
 		}
 
 		size, err := strconv.ParseInt(sizeStr, 10, 64)
 		if err != nil {
-			maxObjectSizeErr = fmt.Errorf("invalid osd_max_object_size value %q: %w", sizeStr, err)
+			h.maxObjectSizeErr = fmt.Errorf("invalid osd_max_object_size value %q: %w", sizeStr, err)
 			return
 		}
 
-		maxObjectSize = size
+		h.maxObjectSize = size
 	})
-	return maxObjectSize, maxObjectSizeErr
+	return h.maxObjectSize, h.maxObjectSizeErr
 }
