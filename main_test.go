@@ -28,15 +28,8 @@ var cephDaemonLogs *LogDemux
 
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
-		"restic-ceph-server": mainVerbose,
+		"restic-ceph-server": main,
 	})
-}
-
-// Wrap main.go#main so verbose logging is always enabled during tests
-func mainVerbose() {
-	logFileArg := "--log-file=" + os.Getenv("TEST_LOG_FILE")
-	os.Args = append([]string{os.Args[0], "--verbose", logFileArg}, os.Args[1:]...)
-	main()
 }
 
 const timeoutGracePeriod = 2 * time.Second
@@ -101,7 +94,8 @@ func TestScript(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			env.Setenv("TEST_LOG_FILE", logFile)
+			env.Setenv("CEPH_SERVER_VERBOSE", "true")
+			env.Setenv("CEPH_SERVER_LOG_FILE", logFile)
 
 			env.Setenv("CEPH_CONF", confPath)
 			env.Setenv("CEPH_POOL", poolName)
@@ -155,9 +149,9 @@ func cmdTailServerLog(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("unsupported: ! tail-server-log")
 	}
 
-	logFile := ts.Getenv("TEST_LOG_FILE")
+	logFile := ts.Getenv("CEPH_SERVER_LOG_FILE")
 	if logFile == "" {
-		ts.Fatalf("TEST_LOG_FILE not set")
+		ts.Fatalf("CEPH_SERVER_LOG_FILE not set")
 	}
 
 	f, err := os.Open(logFile)
