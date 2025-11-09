@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math"
 	"mime"
 	"net/http"
@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ceph/go-ceph/rados"
 )
@@ -24,9 +25,47 @@ type Handler struct {
 	conn              *rados.Conn
 	poolName          string
 	appendOnly        bool
+	logger            *slog.Logger
 	maxObjectSize     int64
 	maxObjectSizeOnce sync.Once
 	maxObjectSizeErr  error
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode    int
+	bytesWritten  int64
+	headerWritten bool
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	if rw.headerWritten {
+		return
+	}
+	rw.statusCode = code
+	rw.headerWritten = true
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if !rw.headerWritten {
+		rw.statusCode = http.StatusOK
+		rw.headerWritten = true
+	}
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytesWritten += int64(n)
+	return n, err
+}
+
+func (h *Handler) logRequest(method, path string, status int, duration time.Duration, reqBytes, respBytes int64) {
+	h.logger.Debug("request",
+		"method", method,
+		"path", path,
+		"status", status,
+		"duration", duration.Round(time.Millisecond).String(),
+		"req_bytes", reqBytes,
+		"resp_bytes", respBytes,
+	)
 }
 
 func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*rados.IOContext, bool) {
@@ -35,7 +74,7 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*rados.
 		if errors.Is(err, rados.ErrNotFound) {
 			http.NotFound(w, r)
 		} else {
-			log.Printf("failed to open IO context: %v\n", err)
+			h.logger.Error("failed to open IO context", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 		return nil, false
@@ -88,139 +127,167 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 	case errors.Is(err, errObjectTooLarge):
 		http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
 	default:
-		log.Printf("failed to serve %s: %v\n", object, err)
+		h.logger.Error("failed to serve object", "object", object, "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 
 func (h *Handler) checkConfig(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
 
-	if err := serveRadosObjectWithRequest(w, r, ioctx, "config", true); err != nil {
-		h.handleRadosError(w, r, "config", err)
+	if err := serveRadosObjectWithRequest(rw, r, ioctx, "config", true); err != nil {
+		h.handleRadosError(rw, r, "config", err)
 	}
 }
 
 func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
 
-	if err := serveRadosObjectWithRequest(w, r, ioctx, "config", false); err != nil {
-		h.handleRadosError(w, r, "config", err)
+	if err := serveRadosObjectWithRequest(rw, r, ioctx, "config", false); err != nil {
+		h.handleRadosError(rw, r, "config", err)
 	}
 }
 
 func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
 
-	if err := h.createRadosObject(w, r, ioctx, "config", "config"); err != nil {
-		h.handleRadosError(w, r, "config", err)
+	if err := h.createRadosObject(rw, r, ioctx, "config", "config"); err != nil {
+		h.handleRadosError(rw, r, "config", err)
 	}
 }
 
 func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
 	if h.appendOnly {
-		verboseLog.Printf("delete blocked in append-only mode for config\n")
-		http.Error(w, "delete not allowed in append-only mode", http.StatusForbidden)
+		h.logger.Debug("delete blocked in append-only mode", "object", "config")
+		http.Error(rw, "delete not allowed in append-only mode", http.StatusForbidden)
 		return
 	}
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
 
-	if err := deleteRadosObject(w, ioctx, "config"); err != nil {
-		h.handleRadosError(w, r, "config", err)
+	if err := deleteRadosObject(rw, ioctx, "config"); err != nil {
+		h.handleRadosError(rw, r, "config", err)
 	}
 }
 
 func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
 	_, err := h.conn.GetPoolByName(h.poolName)
 	if err != nil {
-		log.Printf("pool check failed: pool '%s' does not exist: %v\n", h.poolName, err)
-		http.NotFound(w, r)
+		h.logger.Error("pool check failed", "pool", h.poolName, "error", err)
+		http.NotFound(rw, r)
 		return
 	}
 
 	createParam := r.URL.Query().Get("create")
 	if createParam == "" {
-		http.Error(w, "missing required query parameter: create", http.StatusBadRequest)
+		http.Error(rw, "missing required query parameter: create", http.StatusBadRequest)
 		return
 	}
 	if createParam != "true" {
-		http.Error(w, "invalid value for create parameter: must be 'true'", http.StatusBadRequest)
+		http.Error(rw, "invalid value for create parameter: must be 'true'", http.StatusBadRequest)
 		return
 	}
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
 
-	w.WriteHeader(http.StatusOK)
+	rw.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("GET %v\n", r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
 	defer ioctx.Destroy()
 
-	if err := listBlobsInContext(w, r, ioctx, blobType); err != nil {
-		log.Printf("failed to list %s: %v\n", blobType, err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	if err := listBlobsInContext(rw, r, ioctx, blobType); err != nil {
+		h.logger.Error("failed to list blobs", "type", blobType, "error", err)
+		http.Error(rw, "internal server error", http.StatusInternalServerError)
 	}
 }
 
 func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
 	blobID := r.PathValue("id")
 	if !hexBlobIDRegex.MatchString(blobID) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -228,27 +295,31 @@ func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
 
 	objectName := blobType + "/" + blobID
 
-	if err := serveRadosObjectWithRequest(w, r, ioctx, objectName, true); err != nil {
-		h.handleRadosError(w, r, blobID, err)
+	if err := serveRadosObjectWithRequest(rw, r, ioctx, objectName, true); err != nil {
+		h.handleRadosError(rw, r, blobID, err)
 	}
 }
 
 func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
 	blobID := r.PathValue("id")
 	if !hexBlobIDRegex.MatchString(blobID) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -256,27 +327,31 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 
 	objectName := blobType + "/" + blobID
 
-	if err := serveRadosObjectWithRequest(w, r, ioctx, objectName, false); err != nil {
-		h.handleRadosError(w, r, blobID, err)
+	if err := serveRadosObjectWithRequest(rw, r, ioctx, objectName, false); err != nil {
+		h.handleRadosError(rw, r, blobID, err)
 	}
 }
 
 func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
 	blobID := r.PathValue("id")
 	if !hexBlobIDRegex.MatchString(blobID) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -284,33 +359,37 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 
 	objectName := blobType + "/" + blobID
 
-	if err := h.createRadosObject(w, r, ioctx, objectName, blobID); err != nil {
-		h.handleRadosError(w, r, blobID, err)
+	if err := h.createRadosObject(rw, r, ioctx, objectName, blobID); err != nil {
+		h.handleRadosError(rw, r, blobID, err)
 	}
 }
 
 func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
-	verboseLog.Printf("%v %v\n", r.Method, r.URL)
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	defer func() {
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+	}()
 
 	blobType := r.PathValue("type")
 	if !isValidBlobType(blobType) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
 	blobID := r.PathValue("id")
 	if !hexBlobIDRegex.MatchString(blobID) {
-		http.NotFound(w, r)
+		http.NotFound(rw, r)
 		return
 	}
 
 	if h.appendOnly && blobType != "locks" {
-		verboseLog.Printf("delete blocked in append-only mode for type %s\n", blobType)
-		http.Error(w, "delete not allowed in append-only mode", http.StatusForbidden)
+		h.logger.Debug("delete blocked in append-only mode", "type", blobType)
+		http.Error(rw, "delete not allowed in append-only mode", http.StatusForbidden)
 		return
 	}
 
-	ioctx, ok := h.openIOContext(w, r)
+	ioctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -318,8 +397,8 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 
 	objectName := blobType + "/" + blobID
 
-	if err := deleteRadosObject(w, ioctx, objectName); err != nil {
-		h.handleRadosError(w, r, blobID, err)
+	if err := deleteRadosObject(rw, ioctx, objectName); err != nil {
+		h.handleRadosError(rw, r, blobID, err)
 	}
 }
 
@@ -622,7 +701,7 @@ func (h *Handler) createRadosObject(w http.ResponseWriter, r *http.Request, ioct
 	if expected != [32]byte{} {
 		actual := sha256.Sum256(data)
 		if actual != expected {
-			log.Printf("input hash mismatch for %s: expected %x, got %x\n", object, expected, actual)
+			h.logger.Error("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
 			return errHashMismatch
 		}
 	}
@@ -658,9 +737,9 @@ func (h *Handler) createRadosObject(w http.ResponseWriter, r *http.Request, ioct
 
 		if actual != expected {
 			if err := ioctx.Delete(object); err != nil {
-				log.Printf("failed to delete object %s after write verification failure: %v\n", object, err)
+				h.logger.Error("failed to delete object after write verification failure", "object", object, "error", err)
 			}
-			log.Printf("write verification failed for %s: expected %x, got %x\n", object, expected, actual)
+			h.logger.Error("write verification failed", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
 			return errWriteVerification
 		}
 	}

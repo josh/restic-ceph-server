@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,7 +62,7 @@ func (im *idleMonitor) checkIdleTimeout() {
 			idleTime := time.Since(lastActivity)
 
 			if activeConns == 0 && idleTime >= im.maxIdleTime {
-				log.Printf("Server idle timeout reached (%v), shutting down\n", im.maxIdleTime)
+				slog.Info("server idle timeout reached, shutting down", "timeout", im.maxIdleTime)
 				im.Stop()
 				return
 			}

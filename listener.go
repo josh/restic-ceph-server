@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -255,7 +255,7 @@ func serveAllListeners(ctx context.Context, cancel context.CancelFunc, listeners
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			log.Printf("Listening on %s\n", cfg.description())
+			slog.Info("listening", "address", cfg.description())
 			if err := cfg.Serve(ctx, handler, shutdownTimeout, monitor); err != nil && ctx.Err() == nil {
 				select {
 				case errChan <- fmt.Errorf("listener %s error: %w", cfg.description(), err):
@@ -303,7 +303,7 @@ func serveListener(ctx context.Context, listener net.Listener, handler http.Hand
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer shutdownCancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("server shutdown error: %v\n", err)
+			slog.Error("server shutdown error", "error", err)
 		}
 		return ctx.Err()
 	case err := <-errChan:
