@@ -13,8 +13,6 @@ import (
 	"regexp"
 	"syscall"
 	"time"
-
-	"github.com/ceph/go-ceph/rados"
 )
 
 var logger *slog.Logger
@@ -160,15 +158,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	conn, err := setupCephConn(config)
-	if err != nil {
-		slog.Error("failed to setup Ceph connection", "error", err)
-		os.Exit(1)
+	cephConfig := CephConfig{
+		PoolName:    config.PoolName,
+		KeyringPath: config.KeyringPath,
+		ClientID:    config.ClientID,
+		CephConf:    config.CephConf,
 	}
 
+	connMgr := NewConnectionManager(cephConfig, logger)
+	defer connMgr.Shutdown()
+
 	h := &Handler{
-		conn:       conn,
-		poolName:   config.PoolName,
+		connMgr:    connMgr,
 		appendOnly: config.AppendOnly,
 		logger:     logger,
 	}
@@ -236,46 +237,4 @@ func main() {
 			os.Exit(1)
 		}
 	}
-}
-
-func setupCephConn(config Config) (*rados.Conn, error) {
-	var conn *rados.Conn
-	var err error
-
-	if config.ClientID != "" {
-		conn, err = rados.NewConnWithUser(config.ClientID)
-	} else {
-		conn, err = rados.NewConn()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to create RADOS connection: %v", err)
-	}
-
-	err = conn.ParseDefaultConfigEnv()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse CEPH_ARGS: %v", err)
-	}
-
-	if config.CephConf != "" {
-		err = conn.ReadConfigFile(config.CephConf)
-	} else {
-		err = conn.ReadDefaultConfigFile()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %v", err)
-	}
-
-	if config.KeyringPath != "" {
-		err = conn.SetConfigOption("keyring", config.KeyringPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to set keyring path: %v", err)
-		}
-	}
-
-	err = conn.Connect()
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RADOS: %v", err)
-	}
-
-	return conn, nil
 }

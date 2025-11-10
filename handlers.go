@@ -22,8 +22,7 @@ import (
 )
 
 type Handler struct {
-	conn              *rados.Conn
-	poolName          string
+	connMgr           *ConnectionManager
 	appendOnly        bool
 	logger            *slog.Logger
 	maxObjectSize     int64
@@ -69,9 +68,11 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 }
 
 func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*rados.IOContext, bool) {
-	ioctx, err := h.conn.OpenIOContext(h.poolName)
+	ioctx, err := h.connMgr.GetIOContext()
 	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
+		if errors.Is(err, errConnectionUnavailable) {
+			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		} else if errors.Is(err, rados.ErrNotFound) {
 			http.NotFound(w, r)
 		} else {
 			h.logger.Error("failed to open IO context", "error", err)
@@ -114,6 +115,8 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 	}
 
 	switch {
+	case errors.Is(err, errConnectionUnavailable):
+		http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
 	case errors.Is(err, errObjectNotFound):
 		http.NotFound(w, r)
 	case errors.Is(err, errObjectExists):
@@ -217,10 +220,14 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
 	}()
 
-	_, err := h.conn.GetPoolByName(h.poolName)
+	_, err := h.connMgr.GetPoolByName(h.connMgr.config.PoolName)
 	if err != nil {
-		h.logger.Error("pool check failed", "pool", h.poolName, "error", err)
-		http.NotFound(rw, r)
+		if errors.Is(err, errConnectionUnavailable) {
+			http.Error(rw, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		} else {
+			h.logger.Error("pool check failed", "pool", h.connMgr.config.PoolName, "error", err)
+			http.NotFound(rw, r)
+		}
 		return
 	}
 
@@ -764,7 +771,7 @@ func deleteRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object str
 
 func (h *Handler) getMaxObjectSize() (int64, error) {
 	h.maxObjectSizeOnce.Do(func() {
-		sizeStr, err := h.conn.GetConfigOption("osd_max_object_size")
+		sizeStr, err := h.connMgr.GetConfigOption("osd_max_object_size")
 		if err != nil {
 			h.maxObjectSizeErr = fmt.Errorf("failed to read osd_max_object_size: %w", err)
 			return
