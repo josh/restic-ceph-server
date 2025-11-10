@@ -22,13 +22,11 @@ import (
 )
 
 type Handler struct {
-	conn              *rados.Conn
-	poolName          string
-	appendOnly        bool
-	logger            *slog.Logger
-	maxObjectSize     int64
-	maxObjectSizeOnce sync.Once
-	maxObjectSizeErr  error
+	connMgr         *ConnectionManager
+	appendOnly      bool
+	logger          *slog.Logger
+	maxObjectSize   int64
+	maxObjectSizeMu sync.RWMutex
 }
 
 type responseWriter struct {
@@ -69,9 +67,11 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 }
 
 func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*rados.IOContext, bool) {
-	ioctx, err := h.conn.OpenIOContext(h.poolName)
+	ioctx, err := h.connMgr.GetIOContext()
 	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
+		if errors.Is(err, errConnectionUnavailable) {
+			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		} else if errors.Is(err, rados.ErrNotFound) {
 			http.NotFound(w, r)
 		} else {
 			h.logger.Error("failed to open IO context", "error", err)
@@ -114,6 +114,8 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 	}
 
 	switch {
+	case errors.Is(err, errConnectionUnavailable):
+		http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
 	case errors.Is(err, errObjectNotFound):
 		http.NotFound(w, r)
 	case errors.Is(err, errObjectExists):
@@ -217,9 +219,20 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
 	}()
 
-	_, err := h.conn.GetPoolByName(h.poolName)
+	conn, err := h.connMgr.GetConnection()
 	if err != nil {
-		h.logger.Error("pool check failed", "pool", h.poolName, "error", err)
+		if errors.Is(err, errConnectionUnavailable) {
+			http.Error(rw, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		} else {
+			h.logger.Error("failed to get connection", "error", err)
+			http.Error(rw, "internal server error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	_, err = conn.GetPoolByName(h.connMgr.config.PoolName)
+	if err != nil {
+		h.logger.Error("pool check failed", "pool", h.connMgr.config.PoolName, "error", err)
 		http.NotFound(rw, r)
 		return
 	}
@@ -763,20 +776,36 @@ func deleteRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object str
 }
 
 func (h *Handler) getMaxObjectSize() (int64, error) {
-	h.maxObjectSizeOnce.Do(func() {
-		sizeStr, err := h.conn.GetConfigOption("osd_max_object_size")
-		if err != nil {
-			h.maxObjectSizeErr = fmt.Errorf("failed to read osd_max_object_size: %w", err)
-			return
-		}
+	h.maxObjectSizeMu.RLock()
+	if h.maxObjectSize != 0 {
+		size := h.maxObjectSize
+		h.maxObjectSizeMu.RUnlock()
+		return size, nil
+	}
+	h.maxObjectSizeMu.RUnlock()
 
-		size, err := strconv.ParseInt(sizeStr, 10, 64)
-		if err != nil {
-			h.maxObjectSizeErr = fmt.Errorf("invalid osd_max_object_size value %q: %w", sizeStr, err)
-			return
-		}
+	h.maxObjectSizeMu.Lock()
+	defer h.maxObjectSizeMu.Unlock()
 
-		h.maxObjectSize = size
-	})
-	return h.maxObjectSize, h.maxObjectSizeErr
+	if h.maxObjectSize != 0 {
+		return h.maxObjectSize, nil
+	}
+
+	conn, err := h.connMgr.GetConnection()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get connection: %w", err)
+	}
+
+	sizeStr, err := conn.GetConfigOption("osd_max_object_size")
+	if err != nil {
+		return 0, fmt.Errorf("failed to read osd_max_object_size: %w", err)
+	}
+
+	size, err := strconv.ParseInt(sizeStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid osd_max_object_size value %q: %w", sizeStr, err)
+	}
+
+	h.maxObjectSize = size
+	return size, nil
 }
