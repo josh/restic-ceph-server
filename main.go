@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,7 +17,7 @@ import (
 	"github.com/ceph/go-ceph/rados"
 )
 
-var verboseLog *log.Logger
+var logger *slog.Logger
 
 var (
 	errObjectNotFound    = errors.New("object not found")
@@ -40,14 +40,16 @@ func initLogger(verbose bool, logFilePath string) error {
 		logOutput = file
 	}
 
-	log.SetOutput(logOutput)
-	log.SetFlags(0)
-
+	logLevel := slog.LevelInfo
 	if verbose {
-		verboseLog = log.New(logOutput, "", 0)
-	} else {
-		verboseLog = log.New(io.Discard, "", 0)
+		logLevel = slog.LevelDebug
 	}
+
+	handler := slog.NewTextHandler(logOutput, &slog.HandlerOptions{
+		Level: logLevel,
+	})
+	logger = slog.New(handler)
+	slog.SetDefault(logger)
 
 	return nil
 }
@@ -154,13 +156,13 @@ func main() {
 	}
 
 	if config.PoolName == "" {
-		log.Printf("Ceph pool name not set (use --pool or CEPH_POOL)\n")
+		slog.Error("Ceph pool name not set (use --pool or CEPH_POOL)")
 		os.Exit(1)
 	}
 
 	conn, err := setupCephConn(config)
 	if err != nil {
-		log.Printf("failed to setup Ceph connection: %v\n", err)
+		slog.Error("failed to setup Ceph connection", "error", err)
 		os.Exit(1)
 	}
 
@@ -168,6 +170,7 @@ func main() {
 		conn:       conn,
 		poolName:   config.PoolName,
 		appendOnly: config.AppendOnly,
+		logger:     logger,
 	}
 
 	mux := http.NewServeMux()
@@ -180,13 +183,13 @@ func main() {
 
 	systemdSpecs, err := systemdListeners()
 	if err != nil {
-		log.Printf("failed to get systemd listeners: %v\n", err)
+		slog.Error("failed to get systemd listeners", "error", err)
 		os.Exit(1)
 	}
 
 	config.Listeners = append(config.Listeners, systemdSpecs...)
 	if config.UseStdio && len(config.Listeners) > 0 {
-		log.Printf("Error: --stdio cannot be combined with --listen\n")
+		slog.Error("--stdio cannot be combined with --listen")
 		os.Exit(1)
 	}
 	hasConfiguredListeners := len(config.Listeners) > 0
@@ -196,7 +199,7 @@ func main() {
 	}
 
 	if config.UseStdio && config.MaxIdleTime > 0 {
-		log.Printf("Error: --max-idle-time is not supported in stdio mode\n")
+		slog.Error("--max-idle-time is not supported in stdio mode")
 		os.Exit(1)
 	}
 
@@ -224,12 +227,12 @@ func main() {
 			raw:  "stdio",
 		}
 		if err := stdioCfg.Serve(ctx, mux, config.ShutdownTimeout, monitor); err != nil && ctx.Err() == nil {
-			log.Printf("stdio server error: %v\n", err)
+			slog.Error("stdio server error", "error", err)
 			os.Exit(1)
 		}
 	} else {
 		if err := serveAllListeners(ctx, cancel, config.Listeners, mux, config.ShutdownTimeout, monitor); err != nil {
-			log.Printf("server error: %v\n", err)
+			slog.Error("server error", "error", err)
 			os.Exit(1)
 		}
 	}
