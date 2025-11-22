@@ -5,12 +5,7 @@ This project is written in Go and uses Go modules for dependency management. The
 ## Setup
 
 1. Install Go 1.24 or later.
-2. Install Restic by running the helper script (requires sudo if installing to a system path). The script installs the required Restic version, which may be newer than the one provided by apt:
-
-```sh
-./scripts/install-restic.sh /usr/local/bin
-```
-
+2. Install Restic from [GitHub releases](https://github.com/restic/restic/releases).
 3. Download dependencies with:
 
 ```sh
@@ -27,7 +22,7 @@ sudo apt-get update
 sudo apt-get install ceph librados-dev
 ```
 
-> **Note:** Do not install Restic from apt; the repository version may be too old. Always use `scripts/install-restic.sh` to ensure the correct release is available.
+> **Note:** Do not install Restic from apt; the repository version may be too old. Install from GitHub releases instead.
 
 Run all tests with:
 
