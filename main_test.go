@@ -57,7 +57,7 @@ func TestScript(t *testing.T) {
 	if err != nil {
 		detachSetup()
 		t.Log("\n=== Ceph cluster setup logs ===")
-		_, _ = io.Copy(&TestWriter{t: t}, &setupBuffer)
+		_, _ = io.Copy(t.Output(), &setupBuffer)
 		t.Fatal(err)
 	}
 	detachSetup()
@@ -456,21 +456,6 @@ func createCephPool(ctx context.Context, confPath string) (string, error) {
 	return name, nil
 }
 
-type TestWriter struct {
-	t *testing.T
-}
-
-func (tw *TestWriter) Write(p []byte) (n int, err error) {
-	tw.t.Helper()
-	lines := strings.Split(string(p), "\n")
-	for _, line := range lines {
-		if line != "" {
-			tw.t.Log(line)
-		}
-	}
-	return len(p), nil
-}
-
 type LogDemux struct {
 	outs sync.Map
 }
@@ -505,11 +490,7 @@ func (ld *LogDemux) Attach(writer io.Writer) func() {
 
 func (ld *LogDemux) AttachTest(t *testing.T) func() {
 	t.Helper()
-	w := &TestWriter{t: t}
-	ld.outs.Store(w, struct{}{})
-	return func() {
-		ld.outs.Delete(w)
-	}
+	return ld.Attach(t.Output())
 }
 
 func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
