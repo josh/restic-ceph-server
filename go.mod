@@ -1,6 +1,6 @@
 module github.com/josh/restic-ceph-server
 
-go 1.24.3
+go 1.25
 
 require (
 	github.com/ceph/go-ceph v0.36.0
