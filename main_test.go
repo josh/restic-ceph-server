@@ -758,20 +758,62 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 	}
 	poolName := "test-" + hex.EncodeToString(bytes)
 
-	var cmd *exec.Cmd
-	switch poolType {
-	case "replicated":
-		cmd = exec.CommandContext(ctx, "ceph", "--conf", confPath,
-			"osd", "pool", "create", poolName, "8")
+	const maxAttempts = 3
+	var lastCreateErr error
+	var output []byte
 
-	case "erasure":
-		cmd = exec.CommandContext(ctx, "ceph", "--conf", confPath,
-			"osd", "pool", "create", poolName, "8", "8", "erasure", "k2m1")
-	}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(1 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				ts.Fatalf("context cancelled during retry: %v", ctx.Err())
+			case <-timer.C:
+			}
+		}
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		ts.Fatalf("failed to create %s pool: %v\noutput: %s", poolType, err, output)
+		if lastCreateErr == nil || attempt > 0 {
+			var cmd *exec.Cmd
+			switch poolType {
+			case "replicated":
+				cmd = exec.CommandContext(ctx, "ceph", "--conf", confPath,
+					"osd", "pool", "create", poolName, "8")
+
+			case "erasure":
+				cmd = exec.CommandContext(ctx, "ceph", "--conf", confPath,
+					"osd", "pool", "create", poolName, "8", "8", "erasure", "k2m1")
+			}
+
+			output, lastCreateErr = cmd.CombinedOutput()
+
+			if lastCreateErr != nil && attempt > 0 {
+				ts.Logf("pool creation failed (attempt %d/%d), retrying: %v\noutput: %s",
+					attempt+1, maxAttempts, lastCreateErr, output)
+			}
+		}
+
+		checkCmd := exec.CommandContext(ctx, "ceph", "--conf", confPath,
+			"osd", "pool", "get", poolName, "size")
+
+		if checkCmd.Run() == nil {
+			if lastCreateErr != nil {
+				ts.Logf("warning: pool %s exists despite creation error: %v", poolName, lastCreateErr)
+			}
+			break
+		}
+
+		if lastCreateErr == nil {
+			if attempt < maxAttempts-1 {
+				continue
+			}
+			ts.Fatalf("pool %s does not exist after successful creation", poolName)
+		}
+
+		if attempt == maxAttempts-1 {
+			ts.Fatalf("failed to create %s pool after %d attempts: %v\noutput: %s",
+				poolType, maxAttempts, lastCreateErr, output)
+		}
 	}
 
 	ts.Setenv("CEPH_POOL", poolName)
