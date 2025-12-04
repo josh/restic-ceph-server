@@ -208,6 +208,10 @@ func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string,
 		return "", err
 	}
 
+	if err := createECProfile(startupCtx, confPath); err != nil {
+		return "", err
+	}
+
 	return confPath, nil
 }
 
@@ -257,9 +261,11 @@ func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, er
 		return confPath, err
 	}
 
-	err = os.MkdirAll(filepath.Join(tmpDir, "osd", "ceph-0"), 0o755)
-	if err != nil {
-		return confPath, err
+	for i := 0; i < 3; i++ {
+		err = os.MkdirAll(filepath.Join(tmpDir, "osd", fmt.Sprintf("ceph-%d", i)), 0o755)
+		if err != nil {
+			return confPath, err
+		}
 	}
 
 	err = os.MkdirAll(filepath.Join(tmpDir, "run"), 0o755)
@@ -371,29 +377,34 @@ func startCephMon(t *testing.T, ctx context.Context, startupCtx context.Context,
 
 func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string, out io.Writer) error {
 	t.Helper()
-	cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--mkfs")
-	cmd.Stdout = out
-	cmd.Stderr = out
 
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to initialize OSD filesystem: %w", err)
-	}
+	for i := 0; i < 3; i++ {
+		osdID := strconv.Itoa(i)
 
-	cmd = exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", "0", "--foreground")
-	cmd.Stdout = out
-	cmd.Stderr = out
+		cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", osdID, "--mkfs")
+		cmd.Stdout = out
+		cmd.Stderr = out
 
-	err = cmd.Start()
-	if err != nil {
-		return fmt.Errorf("failed to start OSD: %w", err)
-	}
-
-	t.Cleanup(func() {
-		if err := cmd.Wait(); err != nil {
-			t.Logf("ceph-osd exited with error: %v", err)
+		err := cmd.Run()
+		if err != nil {
+			return fmt.Errorf("failed to initialize OSD %d filesystem: %w", i, err)
 		}
-	})
+
+		cmd = exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", osdID, "--foreground")
+		cmd.Stdout = out
+		cmd.Stderr = out
+
+		err = cmd.Start()
+		if err != nil {
+			return fmt.Errorf("failed to start OSD %d: %w", i, err)
+		}
+
+		t.Cleanup(func() {
+			if err := cmd.Wait(); err != nil {
+				t.Logf("ceph-osd %d exited: %v", i, err)
+			}
+		})
+	}
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -403,11 +414,25 @@ func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context,
 		case <-startupCtx.Done():
 			return startupCtx.Err()
 		case <-ticker.C:
-			if status, err := checkCephStatus(startupCtx, confPath); err == nil && status.Osdmap.NumUpOsds > 0 {
+			if status, err := checkCephStatus(startupCtx, confPath); err == nil && status.Osdmap.NumUpOsds >= 3 {
 				return nil
 			}
 		}
 	}
+}
+
+func createECProfile(ctx context.Context, confPath string) error {
+	cmd := exec.CommandContext(ctx,
+		"ceph", "--conf", confPath,
+		"osd", "erasure-code-profile", "set", "k2m1",
+		"k=2", "m=1", "crush-failure-domain=osd")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create EC profile k2m1: %w, output: %s", err, output)
+	}
+
+	return nil
 }
 
 type cephStatus struct {
