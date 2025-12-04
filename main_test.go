@@ -74,21 +74,17 @@ func TestScript(t *testing.T) {
 		UpdateScripts:       updateScripts,
 		Deadline:            deadline,
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
-			"tail-server-log":    cmdTailServerLog,
-			"wait4socket":        cmdWait4socket,
+			"bin-file":           cmdBinFile,
+			"create-pool":        cmdCreatePool,
 			"rados-object-count": cmdRadosObjectCount,
 			"scrubhex":           cmdScrubHex,
-			"bin-file":           cmdBinFile,
+			"tail-server-log":    cmdTailServerLog,
+			"wait4socket":        cmdWait4socket,
 		},
 		Setup: func(env *testscript.Env) error {
 			scriptCtx, cancel := context.WithCancel(ctx)
 			env.Defer(cancel)
 			env.Values["ctx"] = scriptCtx
-
-			poolName, err := createCephPool(ctx, confPath)
-			if err != nil {
-				return err
-			}
 
 			logFile, err := touchServerLog(t, t.TempDir())
 			if err != nil {
@@ -98,7 +94,6 @@ func TestScript(t *testing.T) {
 			env.Setenv("CEPH_SERVER_LOG_FILE", logFile)
 
 			env.Setenv("CEPH_CONF", confPath)
-			env.Setenv("CEPH_POOL", poolName)
 			env.Setenv("RESTIC_CACHE_DIR", filepath.Join(t.TempDir(), "restic-cache"))
 
 			port, err := getFreePort()
@@ -730,4 +725,66 @@ func (onesReader) Read(p []byte) (n int, err error) {
 		p[i] = 0xFF
 	}
 	return len(p), nil
+}
+
+func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
+
+	if neg {
+		ts.Fatalf("unsupported: ! create-pool")
+	}
+
+	if len(args) != 1 {
+		ts.Fatalf("usage: create-pool <replicated|erasure>")
+	}
+
+	poolType := args[0]
+	if poolType != "replicated" && poolType != "erasure" {
+		ts.Fatalf("pool type must be 'replicated' or 'erasure', got: %s", poolType)
+	}
+
+	confPath := ts.Getenv("CEPH_CONF")
+	if confPath == "" {
+		ts.Fatalf("CEPH_CONF not set")
+	}
+
+	bytes := make([]byte, 4)
+	_, err := rand.Read(bytes)
+	if err != nil {
+		ts.Fatalf("failed to generate pool name: %v", err)
+	}
+	poolName := "test-" + hex.EncodeToString(bytes)
+
+	var cmd *exec.Cmd
+	switch poolType {
+	case "replicated":
+		cmd = exec.CommandContext(ctx, "ceph", "--conf", confPath,
+			"osd", "pool", "create", poolName, "8")
+
+	case "erasure":
+		cmd = exec.CommandContext(ctx, "ceph", "--conf", confPath,
+			"osd", "pool", "create", poolName, "8", "8", "erasure", "k2m1")
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		ts.Fatalf("failed to create %s pool: %v\noutput: %s", poolType, err, output)
+	}
+
+	ts.Setenv("CEPH_POOL", poolName)
+	ts.Setenv("CEPH_POOL_TYPE", poolType)
+
+	ts.Defer(func() {
+		deleteCmd := exec.CommandContext(context.Background(),
+			"ceph", "--conf", confPath,
+			"osd", "pool", "delete", poolName, poolName,
+			"--yes-i-really-really-mean-it")
+
+		if err := deleteCmd.Run(); err != nil {
+			ts.Logf("warning: failed to delete pool %s: %v", poolName, err)
+		}
+	})
 }
