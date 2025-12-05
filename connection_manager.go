@@ -57,12 +57,12 @@ func (cm *ConnectionManager) connect() error {
 		conn, err = rados.NewConn()
 	}
 	if err != nil {
-		return fmt.Errorf("failed to create RADOS connection: %v", err)
+		return fmt.Errorf("failed to create RADOS connection: %w", err)
 	}
 
 	err = conn.ParseDefaultConfigEnv()
 	if err != nil {
-		return fmt.Errorf("failed to parse CEPH_ARGS: %v", err)
+		return fmt.Errorf("failed to parse CEPH_ARGS: %w", err)
 	}
 
 	if cm.config.CephConf != "" {
@@ -71,19 +71,19 @@ func (cm *ConnectionManager) connect() error {
 		err = conn.ReadDefaultConfigFile()
 	}
 	if err != nil {
-		return fmt.Errorf("failed to read config file: %v", err)
+		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	if cm.config.KeyringPath != "" {
 		err = conn.SetConfigOption("keyring", cm.config.KeyringPath)
 		if err != nil {
-			return fmt.Errorf("failed to set keyring path: %v", err)
+			return fmt.Errorf("failed to set keyring path: %w", err)
 		}
 	}
 
 	err = conn.Connect()
 	if err != nil {
-		return fmt.Errorf("failed to connect to RADOS: %v", err)
+		return fmt.Errorf("failed to connect to RADOS: %w", err)
 	}
 
 	cm.mu.Lock()
