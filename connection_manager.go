@@ -60,6 +60,13 @@ func (cm *ConnectionManager) connect() error {
 		return fmt.Errorf("failed to create RADOS connection: %w", err)
 	}
 
+	success := false
+	defer func() {
+		if !success {
+			conn.Shutdown()
+		}
+	}()
+
 	err = conn.ParseDefaultConfigEnv()
 	if err != nil {
 		return fmt.Errorf("failed to parse CEPH_ARGS: %w", err)
@@ -85,6 +92,8 @@ func (cm *ConnectionManager) connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to RADOS: %w", err)
 	}
+
+	success = true
 
 	cm.mu.Lock()
 	oldConn := cm.conn
