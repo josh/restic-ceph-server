@@ -459,23 +459,6 @@ func checkCephStatus(ctx context.Context, confPath string) (cephStatus, error) {
 	return status, err
 }
 
-func createCephPool(ctx context.Context, confPath string) (string, error) {
-	bytes := make([]byte, 4)
-	_, err := rand.Read(bytes)
-	if err != nil {
-		return "", err
-	}
-	name := "test-" + hex.EncodeToString(bytes)
-
-	cmd := exec.CommandContext(ctx, "ceph", "--conf", confPath, "osd", "pool", "create", name, "1")
-	err = cmd.Run()
-	if err != nil {
-		return "", err
-	}
-
-	return name, nil
-}
-
 type LogDemux struct {
 	outs sync.Map
 }
