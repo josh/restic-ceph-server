@@ -6,7 +6,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        ceph-release: [squid, tentacle]
 
     env:
       RESTIC_VERSION: "0.18.1"
@@ -14,10 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Add Ceph repository
+        run: |
+          curl -fsSL https://download.ceph.com/keys/release.asc | sudo gpg --dearmor -o /usr/share/keyrings/ceph-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/ceph-archive-keyring.gpg] https://download.ceph.com/debian-${{ matrix.ceph-release }}/ jammy main" | sudo tee /etc/apt/sources.list.d/ceph.list
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes ceph librados-dev
+
+      - name: Print Ceph version
+        run: ceph --version
 
       - name: Install restic
         run: |
