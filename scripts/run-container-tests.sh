@@ -4,6 +4,8 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+CEPH_RELEASE="${CEPH_RELEASE:-tentacle}"
+
 detect_container_runtime() {
 	if command -v podman >/dev/null 2>&1; then
 		echo "podman"
@@ -32,5 +34,5 @@ if $CONTAINER_RUNTIME volume inspect restic-ceph-server-go-cache >/dev/null 2>&1
 fi
 
 set -o xtrace
-$CONTAINER_RUNTIME build --file .devcontainer/Dockerfile --tag restic-ceph-server:latest .
-$CONTAINER_RUNTIME run --rm --name restic-ceph-server --volume "$PWD:/workspace:z" "${GO_CACHE_ARGS[@]}" restic-ceph-server:latest go test "$@"
+$CONTAINER_RUNTIME build --file .devcontainer/Dockerfile --build-arg "CEPH_RELEASE=${CEPH_RELEASE}" --tag "restic-ceph-server:${CEPH_RELEASE}" .
+$CONTAINER_RUNTIME run --rm --name restic-ceph-server --volume "$PWD:/workspace:z" "${GO_CACHE_ARGS[@]}" "restic-ceph-server:${CEPH_RELEASE}" go test "$@"
