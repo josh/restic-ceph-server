@@ -24,6 +24,7 @@ var (
 	errWriteVerification = errors.New("write verification failed")
 	errObjectTooLarge    = errors.New("object too large")
 	hexBlobIDRegex       = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+	stripedBlobIDRegex   = regexp.MustCompile(`^[0-9a-fA-F]{64}\.[0-9a-f]{16}$`)
 	errClientAborted     = errors.New("client aborted request")
 )
 
@@ -69,6 +70,7 @@ type Config struct {
 	ClientID        string
 	PoolName        string
 	CephConf        string
+	EnableStriper   bool
 }
 
 func parseConfig() (Config, error) {
@@ -83,6 +85,7 @@ func parseConfig() (Config, error) {
 	var clientID string
 	var poolName string
 	var cephConf string
+	var enableStriper bool
 
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
@@ -96,6 +99,7 @@ func parseConfig() (Config, error) {
 	flag.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
 	flag.StringVar(&poolName, "pool", "", "Ceph pool name")
 	flag.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
+	flag.BoolVar(&enableStriper, "enable-striper", false, "use librados striper for large objects")
 	flag.Parse()
 
 	if !verbose {
@@ -104,6 +108,10 @@ func parseConfig() (Config, error) {
 
 	if !appendOnly {
 		appendOnly = parseBoolEnv("CEPH_SERVER_APPEND_ONLY")
+	}
+
+	if !enableStriper {
+		enableStriper = parseBoolEnv("CEPH_SERVER_ENABLE_STRIPER")
 	}
 
 	if logFile == "" {
@@ -138,6 +146,7 @@ func parseConfig() (Config, error) {
 		ClientID:        clientID,
 		PoolName:        poolName,
 		CephConf:        cephConf,
+		EnableStriper:   enableStriper,
 	}, nil
 }
 
@@ -169,9 +178,10 @@ func main() {
 	defer connMgr.Shutdown()
 
 	h := &Handler{
-		connMgr:    connMgr,
-		appendOnly: config.AppendOnly,
-		logger:     logger,
+		connMgr:        connMgr,
+		appendOnly:     config.AppendOnly,
+		logger:         logger,
+		striperEnabled: config.EnableStriper,
 	}
 
 	mux := http.NewServeMux()
