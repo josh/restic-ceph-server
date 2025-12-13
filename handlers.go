@@ -14,19 +14,32 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
+	"github.com/ceph/go-ceph/rados/striper"
 )
 
 type Handler struct {
-	connMgr         *ConnectionManager
-	appendOnly      bool
-	logger          *slog.Logger
-	maxObjectSize   int64
-	maxObjectSizeMu sync.RWMutex
+	connMgr        *ConnectionManager
+	appendOnly     bool
+	logger         *slog.Logger
+	striperEnabled bool
+}
+
+type HandlerContext struct {
+	radosIO       RadosIOContext
+	striperIO     RadosIOContext
+	maxObjectSize int64
+	logger        *slog.Logger
+}
+
+func (hctx *HandlerContext) Destroy() {
+	if hctx.striperIO != nil {
+		hctx.striperIO.Destroy()
+	}
+	hctx.radosIO.Destroy()
 }
 
 type responseWriter struct {
@@ -66,7 +79,7 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 	)
 }
 
-func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*rados.IOContext, bool) {
+func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*HandlerContext, bool) {
 	ioctx, err := h.connMgr.GetIOContext()
 	if err != nil {
 		if errors.Is(err, errConnectionUnavailable) {
@@ -79,12 +92,51 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*rados.
 		}
 		return nil, false
 	}
-	return ioctx, true
+
+	maxSize, err := h.connMgr.GetMaxObjectSize()
+	if err != nil {
+		h.logger.Error("failed to get cluster max object size", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return nil, false
+	}
+
+	hctx := &HandlerContext{
+		radosIO:       &radosIOContextWrapper{ioctx: ioctx},
+		maxObjectSize: maxSize,
+		logger:        h.logger,
+	}
+
+	if h.striperEnabled {
+		layout, err := h.connMgr.GetStriperLayout()
+		if err != nil {
+			h.logger.Error("failed to get striper layout", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return nil, false
+		}
+		s, err := striper.NewWithLayout(ioctx, layout)
+		if err != nil {
+			h.logger.Error("failed to create striper instance", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return nil, false
+		}
+		hctx.striperIO = &striperIOContextWrapper{striper: s}
+	}
+
+	return hctx, true
 }
 
 func isValidBlobType(blobType string) bool {
 	switch blobType {
 	case "keys", "locks", "snapshots", "data", "index":
+		return true
+	default:
+		return false
+	}
+}
+
+func canStripeBlobType(blobType string) bool {
+	switch blobType {
+	case "snapshots", "data", "index":
 		return true
 	default:
 		return false
@@ -124,31 +176,11 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 		http.Error(w, "hash mismatch", http.StatusBadRequest)
 	case errors.Is(err, errClientAborted):
 		http.Error(w, "client aborted request", http.StatusBadRequest)
-	case errors.Is(err, errWriteVerification):
-		http.Error(w, "write verification failed", http.StatusInternalServerError)
 	case errors.Is(err, errObjectTooLarge):
 		http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
 	default:
 		h.logger.Error("failed to serve object", "object", object, "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
-	}
-}
-
-func (h *Handler) checkConfig(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
-	}()
-
-	ioctx, ok := h.openIOContext(rw, r)
-	if !ok {
-		return
-	}
-	defer ioctx.Destroy()
-
-	if err := serveRadosObjectWithRequest(rw, r, ioctx, "config", true); err != nil {
-		h.handleRadosError(rw, r, "config", err)
 	}
 }
 
@@ -159,31 +191,31 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
 	}()
 
-	ioctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer ioctx.Destroy()
+	defer hctx.Destroy()
 
-	if err := serveRadosObjectWithRequest(rw, r, ioctx, "config", false); err != nil {
+	if err := hctx.serveRadosObject(rw, r, "config"); err != nil {
 		h.handleRadosError(rw, r, "config", err)
 	}
 }
 
-func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	defer func() {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
 	}()
 
-	ioctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer ioctx.Destroy()
+	defer hctx.Destroy()
 
-	if err := h.createRadosObject(rw, r, ioctx, "config", "config"); err != nil {
+	if err := hctx.createRadosObject(rw, r, "config", "config", false); err != nil {
 		h.handleRadosError(rw, r, "config", err)
 	}
 }
@@ -201,15 +233,27 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer ioctx.Destroy()
+	defer hctx.Destroy()
 
-	if err := deleteRadosObject(rw, ioctx, "config"); err != nil {
-		h.handleRadosError(rw, r, "config", err)
+	_, err := hctx.radosIO.Stat("config")
+	if errors.Is(err, rados.ErrNotFound) {
+		rw.WriteHeader(http.StatusOK)
+		return
 	}
+	if err != nil {
+		h.handleRadosError(rw, r, "config", fmt.Errorf("stat object config: %w", err))
+		return
+	}
+
+	if err := hctx.radosIO.Remove("config"); err != nil {
+		h.handleRadosError(rw, r, "config", fmt.Errorf("delete object %s: %w", "config", err))
+		return
+	}
+	rw.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
@@ -247,11 +291,11 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer ioctx.Destroy()
+	defer hctx.Destroy()
 
 	rw.WriteHeader(http.StatusOK)
 }
@@ -269,47 +313,92 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer ioctx.Destroy()
+	defer hctx.Destroy()
 
-	if err := listBlobsInContext(rw, r, ioctx, blobType); err != nil {
-		h.logger.Error("failed to list blobs", "type", blobType, "error", err)
+	iter, err := hctx.radosIO.Iter()
+	if err != nil {
+		h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("create iterator: %w", err))
 		http.Error(rw, "internal server error", http.StatusInternalServerError)
+		return
 	}
-}
+	defer iter.Close()
 
-func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
-	}()
+	useV2 := acceptsBlobListV2(r)
+	prefix := blobType + "/"
 
-	blobType := r.PathValue("type")
-	if !isValidBlobType(blobType) {
-		http.NotFound(rw, r)
+	blobNames := []string{}
+	blobInfos := []blobInfo{}
+
+	for iter.Next() {
+		objectName := iter.Value()
+		if objectName == "" || !strings.HasPrefix(objectName, prefix) {
+			continue
+		}
+
+		blobID := strings.TrimPrefix(objectName, prefix)
+
+		if stripedBlobIDRegex.MatchString(blobID) && !firstStripedBlobIDRegex.MatchString(blobID) {
+			continue
+		}
+
+		if firstStripedBlobIDRegex.MatchString(blobID) {
+			blobID = blobID[:len(blobID)-stripeSuffixLen]
+		}
+
+		if !hexBlobIDRegex.MatchString(blobID) {
+			continue
+		}
+
+		baseObjectName := prefix + blobID
+
+		if useV2 {
+			_, stat, err := hctx.statRadosObject(baseObjectName)
+			if err != nil {
+				h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("stat %s: %w", baseObjectName, err))
+				http.Error(rw, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			blobInfos = append(blobInfos, blobInfo{
+				Name: blobID,
+				Size: stat.Size,
+			})
+		} else {
+			blobNames = append(blobNames, blobID)
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("iterate objects: %w", err))
+		http.Error(rw, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	blobID := r.PathValue("id")
-	if !hexBlobIDRegex.MatchString(blobID) {
-		http.NotFound(rw, r)
-		return
+	var data []byte
+	if useV2 {
+		data, err = json.Marshal(blobInfos)
+		if err != nil {
+			h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("marshal JSON: %w", err))
+			http.Error(rw, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/vnd.x.restic.rest.v2")
+	} else {
+		data, err = json.Marshal(blobNames)
+		if err != nil {
+			h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("marshal JSON: %w", err))
+			http.Error(rw, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/vnd.x.restic.rest.v1")
 	}
 
-	ioctx, ok := h.openIOContext(rw, r)
-	if !ok {
-		return
-	}
-	defer ioctx.Destroy()
-
-	objectName := blobType + "/" + blobID
-
-	if err := serveRadosObjectWithRequest(rw, r, ioctx, objectName, true); err != nil {
-		h.handleRadosError(rw, r, blobID, err)
+	rw.WriteHeader(http.StatusOK)
+	if _, err = rw.Write(data); err != nil {
+		h.logger.Error("failed to list blobs", "type", blobType, "error", err)
 	}
 }
 
@@ -332,20 +421,20 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer ioctx.Destroy()
+	defer hctx.Destroy()
 
 	objectName := blobType + "/" + blobID
 
-	if err := serveRadosObjectWithRequest(rw, r, ioctx, objectName, false); err != nil {
+	if err := hctx.serveRadosObject(rw, r, objectName); err != nil {
 		h.handleRadosError(rw, r, blobID, err)
 	}
 }
 
-func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	defer func() {
@@ -364,15 +453,15 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer ioctx.Destroy()
+	defer hctx.Destroy()
 
 	objectName := blobType + "/" + blobID
 
-	if err := h.createRadosObject(rw, r, ioctx, objectName, blobID); err != nil {
+	if err := hctx.createRadosObject(rw, r, objectName, blobID, canStripeBlobType(blobType)); err != nil {
 		h.handleRadosError(rw, r, blobID, err)
 	}
 }
@@ -402,17 +491,29 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ioctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer ioctx.Destroy()
+	defer hctx.Destroy()
 
 	objectName := blobType + "/" + blobID
 
-	if err := deleteRadosObject(rw, ioctx, objectName); err != nil {
-		h.handleRadosError(rw, r, blobID, err)
+	rioctx, _, err := hctx.statRadosObject(objectName)
+	if errors.Is(err, rados.ErrNotFound) {
+		rw.WriteHeader(http.StatusOK)
+		return
 	}
+	if err != nil {
+		h.handleRadosError(rw, r, blobID, fmt.Errorf("stat object %s: %w", objectName, err))
+		return
+	}
+
+	if err := rioctx.Remove(objectName); err != nil {
+		h.handleRadosError(rw, r, blobID, fmt.Errorf("delete object %s: %w", objectName, err))
+		return
+	}
+	rw.WriteHeader(http.StatusOK)
 }
 
 type blobInfo struct {
@@ -420,7 +521,7 @@ type blobInfo struct {
 	Size uint64 `json:"size"`
 }
 
-func prefersBlobListV2(r *http.Request) bool {
+func acceptsBlobListV2(r *http.Request) bool {
 	for _, value := range r.Header.Values("Accept") {
 		for _, mediaRange := range strings.Split(value, ",") {
 			mediaRange = strings.TrimSpace(mediaRange)
@@ -446,75 +547,16 @@ func prefersBlobListV2(r *http.Request) bool {
 	return false
 }
 
-func listBlobsInContext(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, blobType string) error {
-	iter, err := ioctx.Iter()
-	if err != nil {
-		return fmt.Errorf("create iterator: %w", err)
-	}
-	defer iter.Close()
-
-	useV2 := prefersBlobListV2(r)
-	prefix := blobType + "/"
-
-	blobNames := []string{}
-	blobInfos := []blobInfo{}
-
-	for iter.Next() {
-		objectName := iter.Value()
-		if objectName != "" && strings.HasPrefix(objectName, prefix) {
-			blobID := strings.TrimPrefix(objectName, prefix)
-			if !hexBlobIDRegex.MatchString(blobID) {
-				continue
-			}
-			if useV2 {
-				stat, err := ioctx.Stat(objectName)
-				if err != nil {
-					return fmt.Errorf("stat %s: %w", objectName, err)
-				}
-				blobInfos = append(blobInfos, blobInfo{
-					Name: blobID,
-					Size: stat.Size,
-				})
-			} else {
-				blobNames = append(blobNames, blobID)
-			}
-		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("iterate objects: %w", err)
-	}
-
-	var data []byte
-	if useV2 {
-		data, err = json.Marshal(blobInfos)
-		if err != nil {
-			return fmt.Errorf("marshal JSON: %w", err)
-		}
-		w.Header().Set("Content-Type", "application/vnd.x.restic.rest.v2")
-	} else {
-		data, err = json.Marshal(blobNames)
-		if err != nil {
-			return fmt.Errorf("marshal JSON: %w", err)
-		}
-		w.Header().Set("Content-Type", "application/vnd.x.restic.rest.v1")
-	}
-
-	w.WriteHeader(http.StatusOK)
-	_, err = w.Write(data)
-	return err
-}
-
 func (h *Handler) setupRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("HEAD /config", h.checkConfig)
+	mux.HandleFunc("HEAD /config", h.getConfig)
 	mux.HandleFunc("GET /config", h.getConfig)
-	mux.HandleFunc("POST /config", h.saveConfig)
+	mux.HandleFunc("POST /config", h.createConfig)
 	mux.HandleFunc("DELETE /config", h.deleteConfig)
 
 	mux.HandleFunc("GET /{type}/", h.listBlobs)
-	mux.HandleFunc("HEAD /{type}/{id}", h.checkBlob)
+	mux.HandleFunc("HEAD /{type}/{id}", h.getBlob)
 	mux.HandleFunc("GET /{type}/{id}", h.getBlob)
-	mux.HandleFunc("POST /{type}/{id}", h.saveBlob)
+	mux.HandleFunc("POST /{type}/{id}", h.createBlob)
 	mux.HandleFunc("DELETE /{type}/{id}", h.deleteBlob)
 
 	mux.HandleFunc("POST /", h.createRepo)
@@ -522,7 +564,7 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 
 const radosReadChunkSize = 32 * 1024
 
-func expectedHash(object string) ([32]byte, error) {
+func parseExpectedHash(object string) ([32]byte, error) {
 	if object == "config" {
 		return [32]byte{}, nil
 	}
@@ -538,8 +580,93 @@ func expectedHash(object string) ([32]byte, error) {
 	return [32]byte(hashBytes), nil
 }
 
-func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string, head bool) error {
-	stat, err := ioctx.Stat(object)
+type httpRange struct {
+	start  int64
+	end    int64
+	status int
+}
+
+func parseRange(r *http.Request, size int64) (*httpRange, error) {
+	if size == 0 {
+		return &httpRange{start: 0, end: 0, status: http.StatusOK}, nil
+	}
+
+	if r == nil {
+		return &httpRange{start: 0, end: size - 1, status: http.StatusOK}, nil
+	}
+
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader == "" {
+		return &httpRange{start: 0, end: size - 1, status: http.StatusOK}, nil
+	}
+
+	if !strings.HasPrefix(rangeHeader, "bytes=") {
+		return nil, fmt.Errorf("unsupported range unit in: %s", rangeHeader)
+	}
+
+	rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
+
+	if strings.Contains(rangeSpec, ",") {
+		return nil, fmt.Errorf("multiple ranges not supported: %s", rangeHeader)
+	}
+
+	parts := strings.Split(rangeSpec, "-")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid range format: %s", rangeHeader)
+	}
+
+	if parts[0] == "" && parts[1] == "" {
+		return nil, fmt.Errorf("empty range spec: %s", rangeHeader)
+	}
+
+	var start, end int64
+
+	if parts[0] == "" {
+		suffixLength, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || suffixLength < 0 {
+			return nil, fmt.Errorf("invalid suffix length in range: %s", rangeHeader)
+		}
+		if suffixLength >= size {
+			start = 0
+		} else {
+			start = size - suffixLength
+		}
+		end = size - 1
+	} else {
+		rangeStart, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || rangeStart < 0 {
+			return nil, fmt.Errorf("invalid range start: %w", err)
+		}
+
+		if rangeStart >= size {
+			return nil, fmt.Errorf("range start %d out of bounds for size %d", rangeStart, size)
+		}
+
+		start = rangeStart
+
+		if parts[1] != "" {
+			rangeEnd, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil || rangeEnd < 0 {
+				return nil, fmt.Errorf("invalid range end: %w", err)
+			}
+			if rangeEnd >= size {
+				rangeEnd = size - 1
+			}
+			end = rangeEnd
+		} else {
+			end = size - 1
+		}
+
+		if start > end {
+			return nil, fmt.Errorf("range start %d greater than end %d", start, end)
+		}
+	}
+
+	return &httpRange{start: start, end: end, status: http.StatusPartialContent}, nil
+}
+
+func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Request, object string) error {
+	rioctx, stat, err := hctx.statRadosObject(object)
 	if err != nil {
 		if errors.Is(err, rados.ErrNotFound) {
 			return errObjectNotFound
@@ -551,103 +678,27 @@ func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *
 		return fmt.Errorf("object %s size exceeds max int64: %d", object, stat.Size)
 	}
 
-	size := int64(stat.Size)
-	start := int64(0)
-	end := size - 1
-	status := http.StatusOK
-
-	rangeHeader := ""
-	if r != nil {
-		rangeHeader = r.Header.Get("Range")
+	rng, err := parseRange(r, int64(stat.Size))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusRequestedRangeNotSatisfiable)
+		return err
 	}
 
-	if rangeHeader != "" {
-		var rangeStart, rangeEnd int64
-
-		if !strings.HasPrefix(rangeHeader, "bytes=") {
-			http.Error(w, "only bytes ranges are supported", http.StatusRequestedRangeNotSatisfiable)
-			return fmt.Errorf("unsupported range unit in: %s", rangeHeader)
-		}
-
-		rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
-
-		if strings.Contains(rangeSpec, ",") {
-			http.Error(w, "multiple ranges not supported", http.StatusRequestedRangeNotSatisfiable)
-			return fmt.Errorf("multiple ranges not supported: %s", rangeHeader)
-		}
-
-		parts := strings.Split(rangeSpec, "-")
-		if len(parts) != 2 {
-			http.Error(w, "invalid range format", http.StatusRequestedRangeNotSatisfiable)
-			return fmt.Errorf("invalid range format: %s", rangeHeader)
-		}
-
-		if parts[0] == "" && parts[1] == "" {
-			http.Error(w, "invalid range format", http.StatusRequestedRangeNotSatisfiable)
-			return fmt.Errorf("empty range spec: %s", rangeHeader)
-		}
-
-		if parts[0] == "" {
-			suffixLength, err := strconv.ParseInt(parts[1], 10, 64)
-			if err != nil || suffixLength < 0 {
-				http.Error(w, "invalid suffix length", http.StatusRequestedRangeNotSatisfiable)
-				return fmt.Errorf("invalid suffix length in range: %s", rangeHeader)
-			}
-			if suffixLength >= size {
-				start = 0
-			} else {
-				start = size - suffixLength
-			}
-			end = size - 1
-		} else {
-			rangeStart, err = strconv.ParseInt(parts[0], 10, 64)
-			if err != nil || rangeStart < 0 {
-				http.Error(w, "invalid range start", http.StatusRequestedRangeNotSatisfiable)
-				return fmt.Errorf("invalid range start: %w", err)
-			}
-
-			if rangeStart >= size {
-				http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
-				return fmt.Errorf("range start %d out of bounds for size %d", rangeStart, size)
-			}
-
-			start = rangeStart
-
-			if parts[1] != "" {
-				rangeEnd, err = strconv.ParseInt(parts[1], 10, 64)
-				if err != nil || rangeEnd < 0 {
-					http.Error(w, "invalid range end", http.StatusRequestedRangeNotSatisfiable)
-					return fmt.Errorf("invalid range end: %w", err)
-				}
-				if rangeEnd >= size {
-					rangeEnd = size - 1
-				}
-				end = rangeEnd
-			} else {
-				end = size - 1
-			}
-
-			if start > end {
-				http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
-				return fmt.Errorf("range start %d greater than end %d", start, end)
-			}
-		}
-
-		status = http.StatusPartialContent
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+	if rng.status == http.StatusPartialContent {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, stat.Size))
 	}
 
-	contentLength := end - start + 1
+	contentLength := rng.end - rng.start + 1
 	w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
-	w.WriteHeader(status)
+	w.WriteHeader(rng.status)
 
-	if head || contentLength == 0 {
+	if r.Method == "HEAD" || contentLength == 0 {
 		return nil
 	}
 
 	buffer := make([]byte, radosReadChunkSize)
 	remaining := contentLength
-	offset := start
+	offset := rng.start
 
 	for remaining > 0 {
 		chunkSize := len(buffer)
@@ -655,7 +706,7 @@ func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *
 			chunkSize = int(remaining)
 		}
 
-		n, err := ioctx.Read(object, buffer[:chunkSize], uint64(offset))
+		n, err := rioctx.Read(object, buffer[:chunkSize], uint64(offset))
 		if err != nil {
 			if errors.Is(err, rados.ErrNotFound) {
 				return errObjectNotFound
@@ -677,13 +728,11 @@ func serveRadosObjectWithRequest(w http.ResponseWriter, r *http.Request, ioctx *
 	return nil
 }
 
-func (h *Handler) createRadosObject(w http.ResponseWriter, r *http.Request, ioctx *rados.IOContext, object string, hashID string) error {
-	maxSize, err := h.getMaxObjectSize()
-	if err != nil {
-		return fmt.Errorf("failed to get max object size: %w", err)
-	}
+func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Request, object string, hashID string, canStripe bool) error {
+	size := r.ContentLength
+	useStriper := canStripe && hctx.striperIO != nil && size > hctx.maxObjectSize
 
-	if r.ContentLength > 0 && r.ContentLength > maxSize {
+	if !useStriper && size > 0 && size > hctx.maxObjectSize {
 		return errObjectTooLarge
 	}
 
@@ -706,7 +755,13 @@ func (h *Handler) createRadosObject(w http.ResponseWriter, r *http.Request, ioct
 		}
 	}
 
-	expected, err := expectedHash(hashID)
+	actualSize := int64(len(data))
+
+	if !useStriper && actualSize > hctx.maxObjectSize {
+		return errObjectTooLarge
+	}
+
+	expected, err := parseExpectedHash(hashID)
 	if err != nil {
 		return err
 	}
@@ -714,12 +769,12 @@ func (h *Handler) createRadosObject(w http.ResponseWriter, r *http.Request, ioct
 	if expected != [32]byte{} {
 		actual := sha256.Sum256(data)
 		if actual != expected {
-			h.logger.Error("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
+			hctx.logger.Error("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
 			return errHashMismatch
 		}
 	}
 
-	_, err = ioctx.Stat(object)
+	_, _, err = hctx.statRadosObject(object)
 	if err == nil {
 		return errObjectExists
 	}
@@ -727,85 +782,37 @@ func (h *Handler) createRadosObject(w http.ResponseWriter, r *http.Request, ioct
 		return fmt.Errorf("stat object %s: %w", object, err)
 	}
 
-	writeOp := rados.CreateWriteOp()
-	defer writeOp.Release()
+	var rioctx RadosIOContext
+	if useStriper {
+		hctx.logger.Debug("using striper for large object", "object", object, "size", len(data))
+		rioctx = hctx.striperIO
+	} else {
+		hctx.logger.Debug("using regular RADOS for object", "object", object, "size", len(data))
+		rioctx = hctx.radosIO
+	}
 
-	writeOp.Create(rados.CreateExclusive)
-	writeOp.SetAllocationHint(uint64(len(data)), uint64(len(data)), rados.AllocHintIncompressible|rados.AllocHintImmutable|rados.AllocHintLonglived)
-	writeOp.WriteFull(data)
-
-	err = writeOp.Operate(ioctx, object, rados.OperationNoFlag)
+	err = rioctx.WriteFull(object, data)
 	if err != nil {
 		return fmt.Errorf("write object %s: %w", object, err)
 	}
 
-	if expected != [32]byte{} {
-		readData := make([]byte, len(data))
-		_, err = ioctx.Read(object, readData, 0)
-		if err != nil {
-			return fmt.Errorf("read object %s after write: %w", object, err)
-		}
-
-		actual := sha256.Sum256(readData)
-
-		if actual != expected {
-			if err := ioctx.Delete(object); err != nil {
-				h.logger.Error("failed to delete object after write verification failure", "object", object, "error", err)
-			}
-			h.logger.Error("write verification failed", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
-			return errWriteVerification
-		}
-	}
-
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
 
-func deleteRadosObject(w http.ResponseWriter, ioctx *rados.IOContext, object string) error {
-	err := ioctx.Delete(object)
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			w.WriteHeader(http.StatusOK)
-			return nil
+func (hctx *HandlerContext) statRadosObject(object string) (RadosIOContext, StatInfo, error) {
+	if hctx.striperIO != nil {
+		stat, err := hctx.radosIO.Stat(object)
+		if !errors.Is(err, rados.ErrNotFound) {
+			return hctx.radosIO, stat, err
 		}
-		return fmt.Errorf("delete object %s: %w", object, err)
+		_, stripeErr := hctx.radosIO.Stat(object + ".0000000000000000")
+		if !errors.Is(stripeErr, rados.ErrNotFound) {
+			stat, err = hctx.striperIO.Stat(object)
+			return hctx.striperIO, stat, err
+		}
+		return hctx.radosIO, StatInfo{}, err
 	}
-
-	w.WriteHeader(http.StatusOK)
-	return nil
-}
-
-func (h *Handler) getMaxObjectSize() (int64, error) {
-	h.maxObjectSizeMu.RLock()
-	if h.maxObjectSize != 0 {
-		size := h.maxObjectSize
-		h.maxObjectSizeMu.RUnlock()
-		return size, nil
-	}
-	h.maxObjectSizeMu.RUnlock()
-
-	h.maxObjectSizeMu.Lock()
-	defer h.maxObjectSizeMu.Unlock()
-
-	if h.maxObjectSize != 0 {
-		return h.maxObjectSize, nil
-	}
-
-	conn, err := h.connMgr.GetConnection()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get connection: %w", err)
-	}
-
-	sizeStr, err := conn.GetConfigOption("osd_max_object_size")
-	if err != nil {
-		return 0, fmt.Errorf("failed to read osd_max_object_size: %w", err)
-	}
-
-	size, err := strconv.ParseInt(sizeStr, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid osd_max_object_size value %q: %w", sizeStr, err)
-	}
-
-	h.maxObjectSize = size
-	return size, nil
+	stat, err := hctx.radosIO.Stat(object)
+	return hctx.radosIO, stat, err
 }
