@@ -69,7 +69,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 }
 
 func (h *Handler) logRequest(method, path string, status int, duration time.Duration, reqBytes, respBytes int64) {
-	h.logger.Debug("request",
+	h.logger.Info("request",
 		"method", method,
 		"path", path,
 		"status", status,
@@ -156,9 +156,11 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 				http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
 				return
 			case -int(syscall.ENOSPC):
+				h.logger.Error("insufficient storage", "object", object, "error", err)
 				http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
 				return
 			case -int(syscall.EDQUOT):
+				h.logger.Error("disk quota exceeded", "object", object, "error", err)
 				http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
 				return
 			}
@@ -276,7 +278,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 
 	_, err = conn.GetPoolByName(h.connMgr.config.PoolName)
 	if err != nil {
-		h.logger.Error("pool check failed", "pool", h.connMgr.config.PoolName, "error", err)
+		h.logger.Warn("pool check failed", "pool", h.connMgr.config.PoolName, "error", err)
 		http.NotFound(rw, r)
 		return
 	}
@@ -398,7 +400,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 
 	rw.WriteHeader(http.StatusOK)
 	if _, err = rw.Write(data); err != nil {
-		h.logger.Error("failed to list blobs", "type", blobType, "error", err)
+		h.logger.Warn("failed to list blobs", "type", blobType, "error", err)
 	}
 }
 
@@ -674,6 +676,9 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 		return fmt.Errorf("stat %s: %w", object, err)
 	}
 
+	striped := hctx.striperIO != nil && rioctx == hctx.striperIO
+	hctx.logger.Debug("reading blob", "object", object, "size", stat.Size, "striped", striped)
+
 	if stat.Size > uint64(math.MaxInt64) {
 		return fmt.Errorf("object %s size exceeds max int64: %d", object, stat.Size)
 	}
@@ -769,7 +774,7 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 	if expected != [32]byte{} {
 		actual := sha256.Sum256(data)
 		if actual != expected {
-			hctx.logger.Error("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
+			hctx.logger.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
 			return errHashMismatch
 		}
 	}
@@ -784,12 +789,11 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 
 	var rioctx RadosIOContext
 	if useStriper {
-		hctx.logger.Debug("using striper for large object", "object", object, "size", len(data))
 		rioctx = hctx.striperIO
 	} else {
-		hctx.logger.Debug("using regular RADOS for object", "object", object, "size", len(data))
 		rioctx = hctx.radosIO
 	}
+	hctx.logger.Debug("creating blob", "object", object, "size", len(data), "striped", useStriper)
 
 	err = rioctx.WriteFull(object, data)
 	if err != nil {
