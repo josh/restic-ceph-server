@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -148,22 +149,23 @@ type errorCoder interface {
 }
 
 func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, object string, err error) {
-	var opErr rados.OperationError
-	if errors.As(err, &opErr) && opErr.OpError != nil {
-		if ec, ok := opErr.OpError.(errorCoder); ok {
-			switch ec.ErrorCode() {
-			case -int(syscall.EFBIG):
-				http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
-				return
-			case -int(syscall.ENOSPC):
-				h.logger.Error("insufficient storage", "object", object, "error", err)
-				http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
-				return
-			case -int(syscall.EDQUOT):
-				h.logger.Error("disk quota exceeded", "object", object, "error", err)
-				http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
-				return
-			}
+	var ec errorCoder
+	if errors.As(err, &ec) {
+		switch ec.ErrorCode() {
+		case -int(syscall.EFBIG):
+			http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
+			return
+		case -int(syscall.EMSGSIZE):
+			http.Error(w, "write chunk exceeds message limit", http.StatusRequestEntityTooLarge)
+			return
+		case -int(syscall.ENOSPC):
+			h.logger.Error("insufficient storage", "object", object, "error", err)
+			http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
+			return
+		case -int(syscall.EDQUOT):
+			h.logger.Error("disk quota exceeded", "object", object, "error", err)
+			http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
+			return
 		}
 	}
 
@@ -178,8 +180,6 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 		http.Error(w, "hash mismatch", http.StatusBadRequest)
 	case errors.Is(err, errClientAborted):
 		http.Error(w, "client aborted request", http.StatusBadRequest)
-	case errors.Is(err, errObjectTooLarge):
-		http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
 	default:
 		h.logger.Error("failed to serve object", "object", object, "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -737,46 +737,9 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 	size := r.ContentLength
 	useStriper := canStripe && hctx.striperIO != nil && size > hctx.maxObjectSize
 
-	if !useStriper && size > 0 && size > hctx.maxObjectSize {
-		return errObjectTooLarge
-	}
-
-	data := make([]byte, 0, 4096)
-	buffer := make([]byte, 4096)
-
-	for {
-		n, err := r.Body.Read(buffer)
-		if n > 0 {
-			data = append(data, buffer[:n]...)
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.Canceled) {
-				return errClientAborted
-			}
-			return fmt.Errorf("read request body: %w", err)
-		}
-	}
-
-	actualSize := int64(len(data))
-
-	if !useStriper && actualSize > hctx.maxObjectSize {
-		return errObjectTooLarge
-	}
-
 	expected, err := parseExpectedHash(hashID)
 	if err != nil {
 		return err
-	}
-
-	if expected != [32]byte{} {
-		actual := sha256.Sum256(data)
-		if actual != expected {
-			hctx.logger.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
-			return errHashMismatch
-		}
 	}
 
 	_, _, err = hctx.statRadosObject(object)
@@ -793,11 +756,44 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 	} else {
 		rioctx = hctx.radosIO
 	}
-	hctx.logger.Debug("creating blob", "object", object, "size", len(data), "striped", useStriper)
 
-	err = rioctx.WriteFull(object, data)
-	if err != nil {
-		return fmt.Errorf("write object %s: %w", object, err)
+	hasher := sha256.New()
+	reader := io.TeeReader(r.Body, hasher)
+	chunk := make([]byte, defaultWriteChunkSize)
+	offset := uint64(0)
+
+	for {
+		n, err := io.ReadFull(reader, chunk)
+		if n > 0 {
+			if writeErr := rioctx.Write(object, chunk[:n], offset); writeErr != nil {
+				_ = rioctx.Remove(object)
+				return fmt.Errorf("write object %s: %w", object, writeErr)
+			}
+			offset += uint64(n)
+		}
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		}
+		if err != nil {
+			if offset > 0 {
+				_ = rioctx.Remove(object)
+			}
+			if errors.Is(err, context.Canceled) {
+				return errClientAborted
+			}
+			return fmt.Errorf("read request body: %w", err)
+		}
+	}
+
+	hctx.logger.Debug("created blob", "object", object, "size", offset, "striped", useStriper)
+
+	if expected != [32]byte{} {
+		actual := hasher.Sum(nil)
+		if !bytes.Equal(actual, expected[:]) {
+			hctx.logger.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
+			_ = rioctx.Remove(object)
+			return errHashMismatch
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)

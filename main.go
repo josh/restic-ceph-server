@@ -21,7 +21,6 @@ var (
 	errObjectNotFound       = errors.New("object not found")
 	errObjectExists         = errors.New("object exists")
 	errHashMismatch         = errors.New("hash mismatch")
-	errObjectTooLarge       = errors.New("object too large")
 	hexBlobIDRegex          = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 	stripedBlobIDRegex      = regexp.MustCompile(`^[0-9a-fA-F]{64}\.[0-9a-f]{16}$`)
 	firstStripedBlobIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}\.0000000000000000$`)
@@ -29,8 +28,9 @@ var (
 )
 
 const (
-	stripeSuffixLen            = 17
-	defaultMaxObjectSize int64 = 128 * 1024 * 1024 // 128Mi
+	stripeSuffixLen             = 17
+	defaultMaxObjectSize  int64 = 128 * 1024 * 1024
+	defaultWriteChunkSize       = 16 * 1024 * 1024
 )
 
 func initLogger(verbose bool, logFilePath string) error {
