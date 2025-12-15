@@ -352,6 +352,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !hexBlobIDRegex.MatchString(blobID) {
+			h.logger.Warn("skipping unknown object", "object", objectName)
 			continue
 		}
 
