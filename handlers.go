@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -565,8 +563,6 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /", h.createRepo)
 }
 
-const radosReadChunkSize = 32 * 1024
-
 func parseExpectedHash(object string) ([32]byte, error) {
 	if object == "config" {
 		return [32]byte{}, nil
@@ -702,33 +698,10 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 		return nil
 	}
 
-	buffer := make([]byte, radosReadChunkSize)
-	remaining := contentLength
-	offset := rng.start
-
-	for remaining > 0 {
-		chunkSize := len(buffer)
-		if remaining < int64(chunkSize) {
-			chunkSize = int(remaining)
-		}
-
-		n, err := rioctx.Read(object, buffer[:chunkSize], uint64(offset))
-		if err != nil {
-			if errors.Is(err, rados.ErrNotFound) {
-				return errObjectNotFound
-			}
-			return fmt.Errorf("read %s: %w", object, err)
-		}
-		if n == 0 {
-			return fmt.Errorf("short read on %s", object)
-		}
-
-		if _, err := w.Write(buffer[:n]); err != nil {
-			return fmt.Errorf("write response: %w", err)
-		}
-
-		offset += int64(n)
-		remaining -= int64(n)
+	reader := NewRadosObjectReaderWithSize(rioctx, object, int64(stat.Size))
+	section := io.NewSectionReader(reader, rng.start, contentLength)
+	if _, err = io.Copy(w, section); err != nil {
+		return fmt.Errorf("read %s: %w", object, err)
 	}
 
 	return nil
@@ -758,39 +731,20 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 		rioctx = hctx.radosIO
 	}
 
-	hasher := sha256.New()
-	reader := io.TeeReader(r.Body, hasher)
-	chunk := make([]byte, defaultWriteChunkSize)
-	offset := uint64(0)
-
-	for {
-		n, err := io.ReadFull(reader, chunk)
-		if n > 0 {
-			if writeErr := rioctx.Write(object, chunk[:n], offset); writeErr != nil {
-				_ = rioctx.Remove(object)
-				return fmt.Errorf("write object %s: %w", object, writeErr)
-			}
-			offset += uint64(n)
+	writer := NewRadosObjectWriter(rioctx, object)
+	if _, err := io.Copy(writer, r.Body); err != nil {
+		_ = rioctx.Remove(object)
+		if errors.Is(err, context.Canceled) {
+			return errClientAborted
 		}
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		}
-		if err != nil {
-			if offset > 0 {
-				_ = rioctx.Remove(object)
-			}
-			if errors.Is(err, context.Canceled) {
-				return errClientAborted
-			}
-			return fmt.Errorf("read request body: %w", err)
-		}
+		return fmt.Errorf("write object %s: %w", object, err)
 	}
 
-	hctx.logger.Debug("created blob", "object", object, "size", offset, "striped", useStriper)
+	hctx.logger.Debug("created blob", "object", object, "size", size, "striped", useStriper)
 
 	if expected != [32]byte{} {
-		actual := hasher.Sum(nil)
-		if !bytes.Equal(actual, expected[:]) {
+		actual := writer.Sum()
+		if actual != expected {
 			hctx.logger.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
 			_ = rioctx.Remove(object)
 			return errHashMismatch
