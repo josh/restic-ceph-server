@@ -4,10 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
+	"github.com/ceph/go-ceph/rados/striper"
 )
 
 var errConnectionUnavailable = errors.New("ceph connection unavailable")
@@ -21,6 +24,8 @@ type ConnectionManager struct {
 	lastReconnectTime time.Time
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
+	maxObjectSize     int64
+	striperLayout     striper.Layout
 }
 
 type CephConfig struct {
@@ -95,9 +100,34 @@ func (cm *ConnectionManager) connect() error {
 
 	success = true
 
+	maxSize := defaultMaxObjectSize
+	sizeStr, err := conn.GetConfigOption("osd_max_object_size")
+	if err != nil {
+		cm.logger.Warn("failed to read osd_max_object_size, using default", "default", maxSize, "error", err)
+	} else {
+		size, err := strconv.ParseInt(sizeStr, 10, 64)
+		if err != nil {
+			cm.logger.Warn("invalid osd_max_object_size value, using default", "value", sizeStr, "default", maxSize, "error", err)
+		} else {
+			maxSize = size
+			cm.logger.Debug("loaded blob config", "max_object_size", size)
+		}
+	}
+	if maxSize <= 0 || maxSize > math.MaxUint32 {
+		cm.logger.Warn("osd_max_object_size out of valid range, using default", "value", maxSize, "default", defaultMaxObjectSize)
+		maxSize = defaultMaxObjectSize
+	}
+	layout := striper.Layout{
+		StripeUnit:  uint(maxSize),
+		StripeCount: 1,
+		ObjectSize:  uint(maxSize),
+	}
+
 	cm.mu.Lock()
 	oldConn := cm.conn
 	cm.conn = conn
+	cm.maxObjectSize = maxSize
+	cm.striperLayout = layout
 	cm.mu.Unlock()
 
 	if oldConn != nil {
@@ -171,6 +201,28 @@ func (cm *ConnectionManager) GetConnection() (*rados.Conn, error) {
 	}
 
 	return conn, nil
+}
+
+func (cm *ConnectionManager) GetMaxObjectSize() (int64, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if cm.conn == nil {
+		return 0, errConnectionUnavailable
+	}
+
+	return cm.maxObjectSize, nil
+}
+
+func (cm *ConnectionManager) GetStriperLayout() (striper.Layout, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if cm.conn == nil {
+		return striper.Layout{}, errConnectionUnavailable
+	}
+
+	return cm.striperLayout, nil
 }
 
 func (cm *ConnectionManager) markConnectionBroken() {

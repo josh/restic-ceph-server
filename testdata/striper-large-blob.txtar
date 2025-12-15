@@ -1,0 +1,33 @@
+tail-server-log
+create-pool replicated
+
+exec restic-ceph-server --listen $WORK/restic.sock --enable-striper &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file zeros large-blob 40000000
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
+
+exec rados --pool $CEPH_POOL ls
+stdout 'data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562\.0000000000000000'
+stdout 'data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562\.0000000000000001'
+
+exec curl --silent --unix-socket $WORK/restic.sock --head --include 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 40000000'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
+cmp stdout large-blob
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/'
+stdout 'c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL ls
+! stdout 'data/'
+
+kill server
