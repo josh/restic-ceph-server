@@ -20,6 +20,8 @@ import (
 	"github.com/ceph/go-ceph/rados/striper"
 )
 
+const copyBufferSize = 16 * 1024 * 1024
+
 type Handler struct {
 	connMgr        *ConnectionManager
 	appendOnly     bool
@@ -700,7 +702,8 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 	reader := NewRadosObjectReaderWithSize(rioctx, object, int64(stat.Size))
 	section := io.NewSectionReader(reader, rng.start, contentLength)
-	if _, err = io.Copy(w, section); err != nil {
+	buf := make([]byte, copyBufferSize)
+	if _, err = io.CopyBuffer(w, section, buf); err != nil {
 		return fmt.Errorf("read %s: %w", object, err)
 	}
 
@@ -732,7 +735,8 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 	}
 
 	writer := NewRadosObjectWriter(rioctx, object)
-	if _, err := io.Copy(writer, r.Body); err != nil {
+	buf := make([]byte, copyBufferSize)
+	if _, err := io.CopyBuffer(writer, r.Body, buf); err != nil {
 		_ = rioctx.Remove(object)
 		if errors.Is(err, context.Canceled) {
 			return errClientAborted
