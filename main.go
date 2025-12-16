@@ -28,9 +28,8 @@ var (
 )
 
 const (
-	stripeSuffixLen             = 17
-	defaultMaxObjectSize  int64 = 128 * 1024 * 1024
-	defaultWriteChunkSize       = 16 * 1024 * 1024
+	stripeSuffixLen            = 17
+	defaultMaxObjectSize int64 = 128 * 1024 * 1024
 )
 
 func initLogger(verbose bool, logFilePath string) error {
