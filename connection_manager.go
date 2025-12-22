@@ -29,10 +29,13 @@ type ConnectionManager struct {
 }
 
 type CephConfig struct {
-	PoolName    string
-	KeyringPath string
-	ClientID    string
-	CephConf    string
+	PoolName      string
+	KeyringPath   string
+	ClientID      string
+	CephConf      string
+	MaxObjectSize int64
+	StripeUnit    uint
+	StripeCount   uint
 }
 
 func NewConnectionManager(config CephConfig, logger *slog.Logger) *ConnectionManager {
@@ -100,26 +103,45 @@ func (cm *ConnectionManager) connect() error {
 
 	success = true
 
-	maxSize := defaultMaxObjectSize
+	clusterMaxSize := int64(0)
 	sizeStr, err := conn.GetConfigOption("osd_max_object_size")
 	if err != nil {
-		cm.logger.Warn("failed to read osd_max_object_size, using default", "default", maxSize, "error", err)
+		cm.logger.Warn("failed to read osd_max_object_size from cluster", "error", err)
 	} else {
 		size, err := strconv.ParseInt(sizeStr, 10, 64)
 		if err != nil {
-			cm.logger.Warn("invalid osd_max_object_size value, using default", "value", sizeStr, "default", maxSize, "error", err)
+			cm.logger.Warn("invalid osd_max_object_size value from cluster", "value", sizeStr, "error", err)
+		} else if size <= 0 || size > math.MaxUint32 {
+			cm.logger.Warn("osd_max_object_size from cluster out of valid range", "value", size)
 		} else {
-			maxSize = size
-			cm.logger.Debug("loaded blob config", "max_object_size", size)
+			clusterMaxSize = size
+			cm.logger.Debug("loaded cluster max object size", "max_object_size", size)
 		}
 	}
-	if maxSize <= 0 || maxSize > math.MaxUint32 {
-		cm.logger.Warn("osd_max_object_size out of valid range, using default", "value", maxSize, "default", defaultMaxObjectSize)
+
+	var maxSize int64
+	if cm.config.MaxObjectSize > 0 {
+		maxSize = cm.config.MaxObjectSize
+		if clusterMaxSize > 0 && maxSize > clusterMaxSize {
+			cm.logger.Warn("configured max-object-size exceeds cluster limit, writes may fail",
+				"configured", maxSize,
+				"cluster_limit", clusterMaxSize)
+		}
+	} else if clusterMaxSize > 0 {
+		maxSize = clusterMaxSize
+	} else {
 		maxSize = defaultMaxObjectSize
+		cm.logger.Warn("using default max object size", "default", maxSize)
 	}
+
+	stripeUnit := cm.config.StripeUnit
+	if stripeUnit == 0 {
+		stripeUnit = uint(maxSize)
+	}
+
 	layout := striper.Layout{
-		StripeUnit:  uint(maxSize),
-		StripeCount: 1,
+		StripeUnit:  stripeUnit,
+		StripeCount: cm.config.StripeCount,
 		ObjectSize:  uint(maxSize),
 	}
 
