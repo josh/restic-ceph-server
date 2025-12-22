@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,6 +28,8 @@ type Handler struct {
 	striperEnabled  bool
 	readBufferSize  int64
 	writeBufferSize int64
+	readBufferPool  *sync.Pool
+	writeBufferPool *sync.Pool
 }
 
 type HandlerContext struct {
@@ -36,6 +39,8 @@ type HandlerContext struct {
 	logger          *slog.Logger
 	readBufferSize  int64
 	writeBufferSize int64
+	readBufferPool  *sync.Pool
+	writeBufferPool *sync.Pool
 }
 
 func (hctx *HandlerContext) Destroy() {
@@ -109,6 +114,8 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 		logger:          h.logger,
 		readBufferSize:  h.readBufferSize,
 		writeBufferSize: h.writeBufferSize,
+		readBufferPool:  h.readBufferPool,
+		writeBufferPool: h.writeBufferPool,
 	}
 
 	if h.striperEnabled {
@@ -706,7 +713,11 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 	reader := NewRadosObjectReaderWithSize(rioctx, object, int64(stat.Size))
 	section := io.NewSectionReader(reader, rng.start, contentLength)
-	buf := make([]byte, hctx.readBufferSize)
+	bufPtr := hctx.readBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer func() {
+		hctx.readBufferPool.Put(bufPtr)
+	}()
 	if _, err = io.CopyBuffer(w, section, buf); err != nil {
 		return fmt.Errorf("read %s: %w", object, err)
 	}
@@ -739,7 +750,11 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 	}
 
 	writer := NewRadosObjectWriter(rioctx, object)
-	buf := make([]byte, hctx.writeBufferSize)
+	bufPtr := hctx.writeBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer func() {
+		hctx.writeBufferPool.Put(bufPtr)
+	}()
 	if _, err := io.CopyBuffer(writer, r.Body, buf); err != nil {
 		_ = rioctx.Remove(object)
 		if errors.Is(err, context.Canceled) {
