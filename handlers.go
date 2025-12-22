@@ -41,6 +41,7 @@ type HandlerContext struct {
 	writeBufferSize int64
 	readBufferPool  *sync.Pool
 	writeBufferPool *sync.Pool
+	radosCalls      uint64
 }
 
 func (hctx *HandlerContext) Destroy() {
@@ -76,7 +77,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-func (h *Handler) logRequest(method, path string, status int, duration time.Duration, reqBytes, respBytes int64) {
+func (h *Handler) logRequest(method, path string, status int, duration time.Duration, reqBytes, respBytes int64, radosCalls uint64) {
 	h.logger.Info("request",
 		"method", method,
 		"path", path,
@@ -84,6 +85,7 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 		"duration", duration.Round(time.Millisecond).String(),
 		"req_bytes", reqBytes,
 		"resp_bytes", respBytes,
+		"rados_calls", radosCalls,
 	)
 }
 
@@ -109,7 +111,6 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 	}
 
 	hctx := &HandlerContext{
-		radosIO:         &radosIOContextWrapper{ioctx: ioctx},
 		maxObjectSize:   maxSize,
 		logger:          h.logger,
 		readBufferSize:  h.readBufferSize,
@@ -117,6 +118,7 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 		readBufferPool:  h.readBufferPool,
 		writeBufferPool: h.writeBufferPool,
 	}
+	hctx.radosIO = &radosIOContextWrapper{ioctx: ioctx, radosCalls: &hctx.radosCalls}
 
 	if h.striperEnabled {
 		layout, err := h.connMgr.GetStriperLayout()
@@ -131,7 +133,7 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return nil, false
 		}
-		hctx.striperIO = &striperIOContextWrapper{striper: s}
+		hctx.striperIO = &striperIOContextWrapper{striper: s, radosCalls: &hctx.radosCalls}
 	}
 
 	return hctx, true
@@ -200,15 +202,19 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
 	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
 	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer hctx.Destroy()
+	defer func() {
+		radosCalls = hctx.radosCalls
+		hctx.Destroy()
+	}()
 
 	if err := hctx.serveRadosObject(rw, r, "config"); err != nil {
 		h.handleRadosError(rw, r, "config", err)
@@ -218,15 +224,19 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
 	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
 	hctx, ok := h.openIOContext(rw, r)
 	if !ok {
 		return
 	}
-	defer hctx.Destroy()
+	defer func() {
+		radosCalls = hctx.radosCalls
+		hctx.Destroy()
+	}()
 
 	if err := hctx.createRadosObject(rw, r, "config", "config", false); err != nil {
 		h.handleRadosError(rw, r, "config", err)
@@ -236,8 +246,9 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
 	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
 	if h.appendOnly {
@@ -250,7 +261,10 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer hctx.Destroy()
+	defer func() {
+		radosCalls = hctx.radosCalls
+		hctx.Destroy()
+	}()
 
 	_, err := hctx.radosIO.Stat("config")
 	if errors.Is(err, rados.ErrNotFound) {
@@ -272,8 +286,9 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
 	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
 	conn, err := h.connMgr.GetConnection()
@@ -308,7 +323,10 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer hctx.Destroy()
+	defer func() {
+		radosCalls = hctx.radosCalls
+		hctx.Destroy()
+	}()
 
 	rw.WriteHeader(http.StatusOK)
 }
@@ -316,8 +334,9 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
 	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
 	blobType := r.PathValue("type")
@@ -330,7 +349,10 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer hctx.Destroy()
+	defer func() {
+		radosCalls = hctx.radosCalls
+		hctx.Destroy()
+	}()
 
 	iter, err := hctx.radosIO.Iter()
 	if err != nil {
@@ -419,8 +441,9 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
 	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
 	blobType := r.PathValue("type")
@@ -439,7 +462,10 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer hctx.Destroy()
+	defer func() {
+		radosCalls = hctx.radosCalls
+		hctx.Destroy()
+	}()
 
 	objectName := blobType + "/" + blobID
 
@@ -451,8 +477,9 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
 	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
 	blobType := r.PathValue("type")
@@ -471,7 +498,10 @@ func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer hctx.Destroy()
+	defer func() {
+		radosCalls = hctx.radosCalls
+		hctx.Destroy()
+	}()
 
 	objectName := blobType + "/" + blobID
 
@@ -483,8 +513,9 @@ func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
 	defer func() {
-		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten)
+		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
 	blobType := r.PathValue("type")
@@ -509,7 +540,10 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer hctx.Destroy()
+	defer func() {
+		radosCalls = hctx.radosCalls
+		hctx.Destroy()
+	}()
 
 	objectName := blobType + "/" + blobID
 
