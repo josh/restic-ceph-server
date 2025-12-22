@@ -20,20 +20,22 @@ import (
 	"github.com/ceph/go-ceph/rados/striper"
 )
 
-const copyBufferSize = 16 * 1024 * 1024
-
 type Handler struct {
-	connMgr        *ConnectionManager
-	appendOnly     bool
-	logger         *slog.Logger
-	striperEnabled bool
+	connMgr         *ConnectionManager
+	appendOnly      bool
+	logger          *slog.Logger
+	striperEnabled  bool
+	readBufferSize  int64
+	writeBufferSize int64
 }
 
 type HandlerContext struct {
-	radosIO       RadosIOContext
-	striperIO     RadosIOContext
-	maxObjectSize int64
-	logger        *slog.Logger
+	radosIO         RadosIOContext
+	striperIO       RadosIOContext
+	maxObjectSize   int64
+	logger          *slog.Logger
+	readBufferSize  int64
+	writeBufferSize int64
 }
 
 func (hctx *HandlerContext) Destroy() {
@@ -102,9 +104,11 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 	}
 
 	hctx := &HandlerContext{
-		radosIO:       &radosIOContextWrapper{ioctx: ioctx},
-		maxObjectSize: maxSize,
-		logger:        h.logger,
+		radosIO:         &radosIOContextWrapper{ioctx: ioctx},
+		maxObjectSize:   maxSize,
+		logger:          h.logger,
+		readBufferSize:  h.readBufferSize,
+		writeBufferSize: h.writeBufferSize,
 	}
 
 	if h.striperEnabled {
@@ -702,7 +706,7 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 	reader := NewRadosObjectReaderWithSize(rioctx, object, int64(stat.Size))
 	section := io.NewSectionReader(reader, rng.start, contentLength)
-	buf := make([]byte, copyBufferSize)
+	buf := make([]byte, hctx.readBufferSize)
 	if _, err = io.CopyBuffer(w, section, buf); err != nil {
 		return fmt.Errorf("read %s: %w", object, err)
 	}
@@ -735,7 +739,7 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 	}
 
 	writer := NewRadosObjectWriter(rioctx, object)
-	buf := make([]byte, copyBufferSize)
+	buf := make([]byte, hctx.writeBufferSize)
 	if _, err := io.CopyBuffer(writer, r.Body, buf); err != nil {
 		_ = rioctx.Remove(object)
 		if errors.Is(err, context.Canceled) {

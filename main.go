@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -28,8 +29,11 @@ var (
 )
 
 const (
-	stripeSuffixLen            = 17
-	defaultMaxObjectSize int64 = 128 * 1024 * 1024
+	stripeSuffixLen              = 17
+	defaultMaxObjectSize   int64 = 128 * 1024 * 1024
+	defaultReadBufferSize  int64 = 16 * 1024 * 1024
+	defaultWriteBufferSize int64 = 16 * 1024 * 1024
+	defaultStripeCount     uint  = 1
 )
 
 func initLogger(verbose bool, logFilePath string) error {
@@ -62,6 +66,30 @@ func parseBoolEnv(key string) bool {
 	return val == "true" || val == "1" || val == "yes"
 }
 
+func parseInt64Env(key string, defaultVal int64) int64 {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	parsed, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return defaultVal
+	}
+	return parsed
+}
+
+func parseUintEnv(key string, defaultVal uint) uint {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	parsed, err := strconv.ParseUint(val, 10, 64)
+	if err != nil {
+		return defaultVal
+	}
+	return uint(parsed)
+}
+
 type Config struct {
 	Verbose         bool
 	Listeners       listenerFlags
@@ -75,6 +103,11 @@ type Config struct {
 	PoolName        string
 	CephConf        string
 	EnableStriper   bool
+	ReadBufferSize  int64
+	WriteBufferSize int64
+	MaxObjectSize   int64
+	StripeUnit      uint
+	StripeCount     uint
 }
 
 func parseConfig() (Config, error) {
@@ -90,6 +123,11 @@ func parseConfig() (Config, error) {
 	var poolName string
 	var cephConf string
 	var enableStriper bool
+	var readBufferSize int64
+	var writeBufferSize int64
+	var maxObjectSize int64
+	var stripeUnit uint
+	var stripeCount uint
 
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
@@ -104,6 +142,11 @@ func parseConfig() (Config, error) {
 	flag.StringVar(&poolName, "pool", "", "Ceph pool name")
 	flag.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
 	flag.BoolVar(&enableStriper, "enable-striper", false, "use librados striper for large objects")
+	flag.Int64Var(&readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
+	flag.Int64Var(&writeBufferSize, "write-buffer-size", defaultWriteBufferSize, "buffer size for writing objects in bytes")
+	flag.Int64Var(&maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
+	flag.UintVar(&stripeUnit, "stripe-unit", 0, "striper stripe unit size (0 = use max object size)")
+	flag.UintVar(&stripeCount, "stripe-count", defaultStripeCount, "striper stripe count")
 	flag.Parse()
 
 	if !verbose {
@@ -138,6 +181,42 @@ func parseConfig() (Config, error) {
 		cephConf = os.Getenv("CEPH_CONF")
 	}
 
+	if readBufferSize == defaultReadBufferSize {
+		readBufferSize = parseInt64Env("CEPH_SERVER_READ_BUFFER_SIZE", readBufferSize)
+	}
+
+	if writeBufferSize == defaultWriteBufferSize {
+		writeBufferSize = parseInt64Env("CEPH_SERVER_WRITE_BUFFER_SIZE", writeBufferSize)
+	}
+
+	if maxObjectSize == 0 {
+		maxObjectSize = parseInt64Env("CEPH_SERVER_MAX_OBJECT_SIZE", maxObjectSize)
+	}
+
+	if stripeUnit == 0 {
+		stripeUnit = parseUintEnv("CEPH_SERVER_STRIPE_UNIT", stripeUnit)
+	}
+
+	if stripeCount == defaultStripeCount {
+		stripeCount = parseUintEnv("CEPH_SERVER_STRIPE_COUNT", stripeCount)
+	}
+
+	if readBufferSize <= 0 {
+		return Config{}, fmt.Errorf("read-buffer-size must be positive, got %d", readBufferSize)
+	}
+
+	if writeBufferSize <= 0 {
+		return Config{}, fmt.Errorf("write-buffer-size must be positive, got %d", writeBufferSize)
+	}
+
+	if maxObjectSize < 0 {
+		return Config{}, fmt.Errorf("max-object-size cannot be negative, got %d", maxObjectSize)
+	}
+
+	if stripeCount == 0 {
+		return Config{}, fmt.Errorf("stripe-count must be positive, got %d", stripeCount)
+	}
+
 	return Config{
 		Verbose:         verbose,
 		Listeners:       listeners,
@@ -151,6 +230,11 @@ func parseConfig() (Config, error) {
 		PoolName:        poolName,
 		CephConf:        cephConf,
 		EnableStriper:   enableStriper,
+		ReadBufferSize:  readBufferSize,
+		WriteBufferSize: writeBufferSize,
+		MaxObjectSize:   maxObjectSize,
+		StripeUnit:      stripeUnit,
+		StripeCount:     stripeCount,
 	}, nil
 }
 
@@ -172,20 +256,25 @@ func main() {
 	}
 
 	cephConfig := CephConfig{
-		PoolName:    config.PoolName,
-		KeyringPath: config.KeyringPath,
-		ClientID:    config.ClientID,
-		CephConf:    config.CephConf,
+		PoolName:      config.PoolName,
+		KeyringPath:   config.KeyringPath,
+		ClientID:      config.ClientID,
+		CephConf:      config.CephConf,
+		MaxObjectSize: config.MaxObjectSize,
+		StripeUnit:    config.StripeUnit,
+		StripeCount:   config.StripeCount,
 	}
 
 	connMgr := NewConnectionManager(cephConfig, logger)
 	defer connMgr.Shutdown()
 
 	h := &Handler{
-		connMgr:        connMgr,
-		appendOnly:     config.AppendOnly,
-		logger:         logger,
-		striperEnabled: config.EnableStriper,
+		connMgr:         connMgr,
+		appendOnly:      config.AppendOnly,
+		logger:          logger,
+		striperEnabled:  config.EnableStriper,
+		readBufferSize:  config.ReadBufferSize,
+		writeBufferSize: config.WriteBufferSize,
 	}
 
 	mux := http.NewServeMux()
