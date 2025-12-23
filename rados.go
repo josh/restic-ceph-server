@@ -123,7 +123,6 @@ func NewRadosObjectWriter(ctx RadosIOContext, object string) *RadosObjectWriter 
 }
 
 func (w *RadosObjectWriter) Write(p []byte) (int, error) {
-	slog.Debug("RadosObjectWriter.Write", "object", w.object, "offset", w.offset, "size", len(p))
 	w.hasher.Write(p)
 	if err := w.ctx.Write(w.object, p, uint64(w.offset)); err != nil {
 		return 0, err
@@ -151,7 +150,6 @@ func NewRadosObjectReaderWithSize(ctx RadosIOContext, object string, size int64)
 }
 
 func (r *RadosObjectReader) ReadAt(p []byte, off int64) (int, error) {
-	slog.Debug("RadosObjectReader.ReadAt", "object", r.object, "offset", off, "bufSize", len(p))
 	if off >= r.size {
 		return 0, io.EOF
 	}
