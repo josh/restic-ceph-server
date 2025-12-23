@@ -1,5 +1,5 @@
 tail-server-log
-create-pool replicated
+create-pool
 
 env TZ=UTC
 env RESTIC_PROGRESS_FPS=0

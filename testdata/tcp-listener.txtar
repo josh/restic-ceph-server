@@ -1,5 +1,5 @@
 tail-server-log
-create-pool replicated
+create-pool
 
 exec restic-ceph-server --listen 127.0.0.1:$PORT &server&
 wait4socket 127.0.0.1:$PORT
