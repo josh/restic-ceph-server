@@ -783,13 +783,16 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("unsupported: ! create-pool")
 	}
 
-	if len(args) != 1 {
-		ts.Fatalf("usage: create-pool <replicated|erasure>")
+	if len(args) > 1 {
+		ts.Fatalf("usage: create-pool [replicated|erasure]")
 	}
 
-	poolType := args[0]
-	if poolType != "replicated" && poolType != "erasure" {
-		ts.Fatalf("pool type must be 'replicated' or 'erasure', got: %s", poolType)
+	poolType := "replicated"
+	if len(args) == 1 {
+		poolType = args[0]
+		if poolType != "replicated" && poolType != "erasure" {
+			ts.Fatalf("pool type must be 'replicated' or 'erasure', got: %s", poolType)
+		}
 	}
 
 	confPath := ts.Getenv("CEPH_CONF")

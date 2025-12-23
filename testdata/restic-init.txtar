@@ -1,5 +1,5 @@
 tail-server-log
-create-pool replicated
+create-pool
 
 exec restic init --json --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
 stdin stdout

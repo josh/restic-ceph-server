@@ -1,5 +1,5 @@
 tail-server-log
-create-pool replicated
+create-pool
 
 exec restic-ceph-server --keyring $WORK/dummy.keyring --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
