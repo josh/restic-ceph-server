@@ -20,7 +20,9 @@ type StatInfo struct {
 type RadosIOContext interface {
 	Stat(object string) (StatInfo, error)
 	Read(object string, buf []byte, offset uint64) (int, error)
+	Append(object string, data []byte) error
 	Write(object string, data []byte, offset uint64) error
+	WriteFull(object string, data []byte) error
 	Remove(object string) error
 	Destroy()
 	Iter() (*rados.Iter, error)
@@ -39,15 +41,27 @@ func (r *radosIOContextWrapper) Stat(object string) (StatInfo, error) {
 }
 
 func (r *radosIOContextWrapper) Read(object string, buf []byte, offset uint64) (int, error) {
-	slog.Debug("rados.Read", "object", object, "offset", offset, "bufSize", len(buf))
+	slog.Debug("rados.Read", "object", object, "offset", offset, "size", len(buf))
 	atomic.AddUint64(r.radosCalls, 1)
 	return r.ioctx.Read(object, buf, offset)
+}
+
+func (r *radosIOContextWrapper) Append(object string, data []byte) error {
+	slog.Debug("rados.Append", "object", object, "size", len(data))
+	atomic.AddUint64(r.radosCalls, 1)
+	return r.ioctx.Append(object, data)
 }
 
 func (r *radosIOContextWrapper) Write(object string, data []byte, offset uint64) error {
 	slog.Debug("rados.Write", "object", object, "offset", offset, "dataSize", len(data))
 	atomic.AddUint64(r.radosCalls, 1)
 	return r.ioctx.Write(object, data, offset)
+}
+
+func (r *radosIOContextWrapper) WriteFull(object string, data []byte) error {
+	slog.Debug("rados.WriteFull", "object", object, "size", len(data))
+	atomic.AddUint64(r.radosCalls, 1)
+	return r.ioctx.WriteFull(object, data)
 }
 
 func (r *radosIOContextWrapper) Remove(object string) error {
@@ -81,15 +95,27 @@ func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
 }
 
 func (s *striperIOContextWrapper) Read(object string, buf []byte, offset uint64) (int, error) {
-	slog.Debug("striper.Read", "object", object, "offset", offset, "bufSize", len(buf))
+	slog.Debug("striper.Read", "object", object, "offset", offset, "size", len(buf))
 	atomic.AddUint64(s.radosCalls, 1)
 	return s.striper.Read(object, buf, offset)
+}
+
+func (s *striperIOContextWrapper) Append(object string, data []byte) error {
+	slog.Debug("striper.Append", "object", object, "size", len(data))
+	atomic.AddUint64(s.radosCalls, 1)
+	return s.striper.Append(object, data)
 }
 
 func (s *striperIOContextWrapper) Write(object string, data []byte, offset uint64) error {
 	slog.Debug("striper.Write", "object", object, "offset", offset, "dataSize", len(data))
 	atomic.AddUint64(s.radosCalls, 1)
 	return s.striper.Write(object, data, offset)
+}
+
+func (s *striperIOContextWrapper) WriteFull(object string, data []byte) error {
+	slog.Debug("striper.WriteFull", "object", object, "size", len(data))
+	atomic.AddUint64(s.radosCalls, 1)
+	return s.striper.WriteFull(object, data)
 }
 
 func (s *striperIOContextWrapper) Remove(object string) error {
