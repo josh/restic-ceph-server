@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"hash"
 	"io"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -31,31 +32,37 @@ type radosIOContextWrapper struct {
 }
 
 func (r *radosIOContextWrapper) Stat(object string) (StatInfo, error) {
+	slog.Debug("rados.Stat", "object", object)
 	atomic.AddUint64(r.radosCalls, 1)
 	stat, err := r.ioctx.Stat(object)
 	return StatInfo{Size: stat.Size, ModTime: stat.ModTime}, err
 }
 
 func (r *radosIOContextWrapper) Read(object string, buf []byte, offset uint64) (int, error) {
+	slog.Debug("rados.Read", "object", object, "offset", offset, "bufSize", len(buf))
 	atomic.AddUint64(r.radosCalls, 1)
 	return r.ioctx.Read(object, buf, offset)
 }
 
 func (r *radosIOContextWrapper) Write(object string, data []byte, offset uint64) error {
+	slog.Debug("rados.Write", "object", object, "offset", offset, "dataSize", len(data))
 	atomic.AddUint64(r.radosCalls, 1)
 	return r.ioctx.Write(object, data, offset)
 }
 
 func (r *radosIOContextWrapper) Remove(object string) error {
+	slog.Debug("rados.Remove", "object", object)
 	atomic.AddUint64(r.radosCalls, 1)
 	return r.ioctx.Delete(object)
 }
 
 func (r *radosIOContextWrapper) Destroy() {
+	slog.Debug("rados.Destroy")
 	r.ioctx.Destroy()
 }
 
 func (r *radosIOContextWrapper) Iter() (*rados.Iter, error) {
+	slog.Debug("rados.Iter")
 	atomic.AddUint64(r.radosCalls, 1)
 	return r.ioctx.Iter()
 }
@@ -66,6 +73,7 @@ type striperIOContextWrapper struct {
 }
 
 func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
+	slog.Debug("striper.Stat", "object", object)
 	atomic.AddUint64(s.radosCalls, 1)
 	stat, err := s.striper.Stat(object)
 	modTime := time.Unix(stat.ModTime.Sec, stat.ModTime.Nsec)
@@ -73,21 +81,25 @@ func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
 }
 
 func (s *striperIOContextWrapper) Read(object string, buf []byte, offset uint64) (int, error) {
+	slog.Debug("striper.Read", "object", object, "offset", offset, "bufSize", len(buf))
 	atomic.AddUint64(s.radosCalls, 1)
 	return s.striper.Read(object, buf, offset)
 }
 
 func (s *striperIOContextWrapper) Write(object string, data []byte, offset uint64) error {
+	slog.Debug("striper.Write", "object", object, "offset", offset, "dataSize", len(data))
 	atomic.AddUint64(s.radosCalls, 1)
 	return s.striper.Write(object, data, offset)
 }
 
 func (s *striperIOContextWrapper) Remove(object string) error {
+	slog.Debug("striper.Remove", "object", object)
 	atomic.AddUint64(s.radosCalls, 1)
 	return s.striper.Remove(object)
 }
 
 func (s *striperIOContextWrapper) Destroy() {
+	slog.Debug("striper.Destroy")
 	s.striper.Destroy()
 }
 
@@ -111,6 +123,7 @@ func NewRadosObjectWriter(ctx RadosIOContext, object string) *RadosObjectWriter 
 }
 
 func (w *RadosObjectWriter) Write(p []byte) (int, error) {
+	slog.Debug("RadosObjectWriter.Write", "object", w.object, "offset", w.offset, "size", len(p))
 	w.hasher.Write(p)
 	if err := w.ctx.Write(w.object, p, uint64(w.offset)); err != nil {
 		return 0, err
@@ -138,6 +151,7 @@ func NewRadosObjectReaderWithSize(ctx RadosIOContext, object string, size int64)
 }
 
 func (r *RadosObjectReader) ReadAt(p []byte, off int64) (int, error) {
+	slog.Debug("RadosObjectReader.ReadAt", "object", r.object, "offset", off, "bufSize", len(p))
 	if off >= r.size {
 		return 0, io.EOF
 	}
