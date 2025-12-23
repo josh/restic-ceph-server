@@ -801,6 +801,16 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 		}
 	}
 
+	// TODO: Allow EC overwrites for now
+	// Eventually need to switch over to WriteFull and Append only operations
+	if poolType == "erasure" {
+		cmd := exec.CommandContext(ctx, "ceph", "--conf", confPath,
+			"osd", "pool", "set", poolName, "allow_ec_overwrites", "true")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			ts.Fatalf("failed to enable ec overwrites: %v\noutput: %s", err, out)
+		}
+	}
+
 	ts.Setenv("CEPH_POOL", poolName)
 	ts.Setenv("CEPH_POOL_TYPE", poolType)
 
