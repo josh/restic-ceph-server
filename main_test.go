@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -78,6 +79,7 @@ func TestScript(t *testing.T) {
 			"create-pool":        cmdCreatePool,
 			"rados-object-count": cmdRadosObjectCount,
 			"scrubhex":           cmdScrubHex,
+			"sha256":             cmdSha256,
 			"tail-server-log":    cmdTailServerLog,
 			"wait4socket":        cmdWait4socket,
 		},
@@ -812,4 +814,29 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 			ts.Logf("warning: failed to delete pool %s: %v", poolName, err)
 		}
 	})
+}
+
+func cmdSha256(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! sha256")
+	}
+	if len(args) != 2 {
+		ts.Fatalf("usage: sha256 <input-file> <output-file>")
+	}
+
+	inputPath := args[0]
+	outputPath := args[1]
+
+	data, err := os.ReadFile(ts.MkAbs(inputPath))
+	if err != nil {
+		ts.Fatalf("failed to read input file: %v", err)
+	}
+
+	hash := sha256.Sum256(data)
+	hashHex := hex.EncodeToString(hash[:])
+
+	err = os.WriteFile(ts.MkAbs(outputPath), []byte(hashHex), 0o644)
+	if err != nil {
+		ts.Fatalf("failed to write output file: %v", err)
+	}
 }
