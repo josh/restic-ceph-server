@@ -65,46 +65,52 @@ func TestScript(t *testing.T) {
 
 	updateScripts, _ := strconv.ParseBool(os.Getenv("UPDATE_SCRIPTS"))
 
-	testscript.Run(t, testscript.Params{
-		Dir:                 "testdata",
-		ContinueOnError:     true,
-		RequireExplicitExec: true,
-		UpdateScripts:       updateScripts,
-		Deadline:            deadline,
-		Cmds: map[string]func(*testscript.TestScript, bool, []string){
-			"bin-cmp":            cmdBinCmp,
-			"bin-file":           cmdBinFile,
-			"byte-count":         cmdByteCount,
-			"create-pool":        cmdCreatePool,
-			"rados-object-count": cmdRadosObjectCount,
-			"scrubhex":           cmdScrubHex,
-			"tail-logs":          cmdTailLogs,
-			"wait4socket":        cmdWait4socket,
-		},
-		Setup: func(env *testscript.Env) error {
-			scriptCtx, cancel := context.WithCancel(ctx)
-			env.Defer(cancel)
-			env.Values["ctx"] = scriptCtx
+	for _, poolType := range []string{"replicated", "erasure"} {
+		poolType := poolType
+		t.Run(poolType, func(t *testing.T) {
+			testscript.Run(t, testscript.Params{
+				Dir:                 "testdata",
+				ContinueOnError:     true,
+				RequireExplicitExec: true,
+				UpdateScripts:       updateScripts,
+				Deadline:            deadline,
+				Cmds: map[string]func(*testscript.TestScript, bool, []string){
+					"bin-cmp":            cmdBinCmp,
+					"bin-file":           cmdBinFile,
+					"byte-count":         cmdByteCount,
+					"create-pool":        cmdCreatePool,
+					"rados-object-count": cmdRadosObjectCount,
+					"scrubhex":           cmdScrubHex,
+					"tail-logs":          cmdTailLogs,
+					"wait4socket":        cmdWait4socket,
+				},
+				Setup: func(env *testscript.Env) error {
+					scriptCtx, cancel := context.WithCancel(ctx)
+					env.Defer(cancel)
+					env.Values["ctx"] = scriptCtx
 
-			logFile, err := touchServerLog(t, t.TempDir())
-			if err != nil {
-				return err
-			}
-			env.Setenv("CEPH_SERVER_VERBOSE", "true")
-			env.Setenv("CEPH_SERVER_LOG_FILE", logFile)
+					logFile, err := touchServerLog(t, t.TempDir())
+					if err != nil {
+						return err
+					}
+					env.Setenv("CEPH_SERVER_VERBOSE", "true")
+					env.Setenv("CEPH_SERVER_LOG_FILE", logFile)
 
-			env.Setenv("CEPH_CONF", confPath)
-			env.Setenv("RESTIC_CACHE_DIR", filepath.Join(t.TempDir(), "restic-cache"))
+					env.Setenv("CEPH_CONF", confPath)
+					env.Setenv("RESTIC_CACHE_DIR", filepath.Join(t.TempDir(), "restic-cache"))
+					env.Setenv("DEFAULT_POOL_TYPE", poolType)
 
-			port, err := getFreePort()
-			if err != nil {
-				return fmt.Errorf("failed to allocate PORT: %w", err)
-			}
-			env.Setenv("PORT", strconv.Itoa(port))
+					port, err := getFreePort()
+					if err != nil {
+						return fmt.Errorf("failed to allocate PORT: %w", err)
+					}
+					env.Setenv("PORT", strconv.Itoa(port))
 
-			return nil
-		},
-	})
+					return nil
+				},
+			})
+		})
+	}
 }
 
 func getFreePort() (int, error) {
@@ -853,12 +859,15 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("usage: create-pool [replicated|erasure]")
 	}
 
-	poolType := "replicated"
+	poolType := ts.Getenv("DEFAULT_POOL_TYPE")
+	if poolType == "" {
+		poolType = "replicated"
+	}
 	if len(args) == 1 {
 		poolType = args[0]
-		if poolType != "replicated" && poolType != "erasure" {
-			ts.Fatalf("pool type must be 'replicated' or 'erasure', got: %s", poolType)
-		}
+	}
+	if poolType != "replicated" && poolType != "erasure" {
+		ts.Fatalf("pool type must be 'replicated' or 'erasure', got: %s", poolType)
 	}
 
 	confPath := ts.Getenv("CEPH_CONF")
