@@ -171,6 +171,10 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 		case -int(syscall.EMSGSIZE):
 			http.Error(w, "write chunk exceeds message limit", http.StatusRequestEntityTooLarge)
 			return
+		case -int(syscall.EOPNOTSUPP):
+			h.logger.Error("operation not supported", "object", object, "error", err)
+			http.Error(w, "operation not supported", http.StatusInternalServerError)
+			return
 		case -int(syscall.ENOSPC):
 			h.logger.Error("insufficient storage", "object", object, "error", err)
 			http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
