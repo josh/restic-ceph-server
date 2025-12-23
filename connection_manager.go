@@ -25,6 +25,7 @@ type ConnectionManager struct {
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
 	maxObjectSize     int64
+	maxWriteSize      int64
 	striperLayout     striper.Layout
 }
 
@@ -119,6 +120,22 @@ func (cm *ConnectionManager) connect() error {
 		}
 	}
 
+	clusterMaxWriteSize := int64(0)
+	writeSizeStr, err := conn.GetConfigOption("osd_max_write_size")
+	if err != nil {
+		cm.logger.Warn("failed to read osd_max_write_size from cluster", "error", err)
+	} else {
+		writeSizeMB, err := strconv.ParseInt(writeSizeStr, 10, 64)
+		if err != nil {
+			cm.logger.Warn("invalid osd_max_write_size value from cluster", "value", writeSizeStr, "error", err)
+		} else if writeSizeMB <= 0 {
+			cm.logger.Warn("osd_max_write_size from cluster out of valid range", "value", writeSizeMB)
+		} else {
+			clusterMaxWriteSize = writeSizeMB * 1024 * 1024
+			cm.logger.Debug("loaded cluster max write size", "max_write_size", clusterMaxWriteSize)
+		}
+	}
+
 	var maxSize int64
 	if cm.config.MaxObjectSize > 0 {
 		maxSize = cm.config.MaxObjectSize
@@ -132,6 +149,14 @@ func (cm *ConnectionManager) connect() error {
 	} else {
 		maxSize = defaultMaxObjectSize
 		cm.logger.Warn("using default max object size", "default", maxSize)
+	}
+
+	var maxWriteSize int64
+	if clusterMaxWriteSize > 0 {
+		maxWriteSize = clusterMaxWriteSize
+	} else {
+		maxWriteSize = defaultMaxWriteSize
+		cm.logger.Warn("using default max write size", "default", maxWriteSize)
 	}
 
 	stripeUnit := cm.config.StripeUnit
@@ -149,6 +174,7 @@ func (cm *ConnectionManager) connect() error {
 	oldConn := cm.conn
 	cm.conn = conn
 	cm.maxObjectSize = maxSize
+	cm.maxWriteSize = maxWriteSize
 	cm.striperLayout = layout
 	cm.mu.Unlock()
 
@@ -234,6 +260,17 @@ func (cm *ConnectionManager) GetMaxObjectSize() (int64, error) {
 	}
 
 	return cm.maxObjectSize, nil
+}
+
+func (cm *ConnectionManager) GetMaxWriteSize() (int64, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if cm.conn == nil {
+		return 0, errConnectionUnavailable
+	}
+
+	return cm.maxWriteSize, nil
 }
 
 func (cm *ConnectionManager) GetStriperLayout() (striper.Layout, error) {

@@ -34,6 +34,7 @@ const (
 	defaultMaxObjectSize   int64 = 128 * 1024 * 1024
 	defaultReadBufferSize  int64 = 16 * 1024 * 1024
 	defaultWriteBufferSize int64 = 16 * 1024 * 1024
+	defaultMaxWriteSize    int64 = 90 * 1024 * 1024
 	defaultStripeCount     uint  = 1
 )
 
@@ -268,6 +269,15 @@ func main() {
 
 	connMgr := NewConnectionManager(cephConfig, logger)
 	defer connMgr.Shutdown()
+
+	maxWriteSize, err := connMgr.GetMaxWriteSize()
+	if err != nil {
+		logger.Warn("failed to get max write size for validation", "error", err)
+	} else if config.WriteBufferSize > maxWriteSize {
+		logger.Warn("write buffer size exceeds cluster max write size, writes may be chunked or fail",
+			"write_buffer_size", config.WriteBufferSize,
+			"cluster_max_write_size", maxWriteSize)
+	}
 
 	h := &Handler{
 		connMgr:         connMgr,
