@@ -19,7 +19,9 @@ stdout 'HTTP/.* 200'
 stdout 'Content-Length: 40000000'
 
 exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562' --output downloaded-blob
-cmp downloaded-blob large-blob
+sha256 downloaded-blob downloaded-blob-sha256
+sha256 large-blob large-blob-sha256
+cmp downloaded-blob-sha256 large-blob-sha256
 
 exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/'
 stdout 'c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
