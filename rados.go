@@ -21,7 +21,6 @@ type RadosIOContext interface {
 	Stat(object string) (StatInfo, error)
 	Read(object string, buf []byte, offset uint64) (int, error)
 	Append(object string, data []byte) error
-	Write(object string, data []byte, offset uint64) error
 	WriteFull(object string, data []byte) error
 	Remove(object string) error
 	Destroy()
@@ -50,12 +49,6 @@ func (r *radosIOContextWrapper) Append(object string, data []byte) error {
 	slog.Debug("rados.Append", "object", object, "size", len(data))
 	atomic.AddUint64(r.radosCalls, 1)
 	return r.ioctx.Append(object, data)
-}
-
-func (r *radosIOContextWrapper) Write(object string, data []byte, offset uint64) error {
-	slog.Debug("rados.Write", "object", object, "offset", offset, "dataSize", len(data))
-	atomic.AddUint64(r.radosCalls, 1)
-	return r.ioctx.Write(object, data, offset)
 }
 
 func (r *radosIOContextWrapper) WriteFull(object string, data []byte) error {
@@ -106,12 +99,6 @@ func (s *striperIOContextWrapper) Append(object string, data []byte) error {
 	return s.striper.Append(object, data)
 }
 
-func (s *striperIOContextWrapper) Write(object string, data []byte, offset uint64) error {
-	slog.Debug("striper.Write", "object", object, "offset", offset, "dataSize", len(data))
-	atomic.AddUint64(s.radosCalls, 1)
-	return s.striper.Write(object, data, offset)
-}
-
 func (s *striperIOContextWrapper) WriteFull(object string, data []byte) error {
 	slog.Debug("striper.WriteFull", "object", object, "size", len(data))
 	atomic.AddUint64(s.radosCalls, 1)
@@ -136,7 +123,6 @@ func (s *striperIOContextWrapper) Iter() (*rados.Iter, error) {
 type RadosObjectWriter struct {
 	ctx    RadosIOContext
 	object string
-	offset int64
 	hasher hash.Hash
 }
 
@@ -150,10 +136,9 @@ func NewRadosObjectWriter(ctx RadosIOContext, object string) *RadosObjectWriter 
 
 func (w *RadosObjectWriter) Write(p []byte) (int, error) {
 	w.hasher.Write(p)
-	if err := w.ctx.Write(w.object, p, uint64(w.offset)); err != nil {
+	if err := w.ctx.Append(w.object, p); err != nil {
 		return 0, err
 	}
-	w.offset += int64(len(p))
 	return len(p), nil
 }
 
