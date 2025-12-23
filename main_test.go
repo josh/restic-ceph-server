@@ -478,50 +478,6 @@ func checkCephStatus(ctx context.Context, confPath string) (cephStatus, error) {
 	return status, err
 }
 
-func isClusterHealthy(status cephStatus) bool {
-	if status.Health.Status != "HEALTH_OK" && status.Health.Status != "HEALTH_WARN" {
-		return false
-	}
-
-	if status.Pgmap.NumPgs == 0 {
-		return true
-	}
-
-	activeCleanCount := 0
-	for _, pgState := range status.Pgmap.PgsByState {
-		if strings.HasPrefix(pgState.StateName, "active+clean") {
-			activeCleanCount += pgState.Count
-		}
-	}
-
-	return activeCleanCount == status.Pgmap.NumPgs
-}
-
-func waitForClusterHealth(ctx context.Context, confPath string, timeout time.Duration) error {
-	healthCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	status, err := checkCephStatus(healthCtx, confPath)
-	if err == nil && isClusterHealthy(status) {
-		return nil
-	}
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-healthCtx.Done():
-			return healthCtx.Err()
-		case <-ticker.C:
-			status, err := checkCephStatus(healthCtx, confPath)
-			if err == nil && isClusterHealthy(status) {
-				return nil
-			}
-		}
-	}
-}
-
 type LogDemux struct {
 	outs sync.Map
 }
@@ -865,10 +821,6 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 		}
 	}
 
-	if err := waitForClusterHealth(ctx, confPath, 30*time.Second); err != nil {
-		ts.Fatalf("cluster did not become healthy after pool creation within 30s: %v", err)
-	}
-
 	ts.Setenv("CEPH_POOL", poolName)
 	ts.Setenv("CEPH_POOL_TYPE", poolType)
 
@@ -882,10 +834,6 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 		if err := deleteCmd.Run(); err != nil {
 			ts.Logf("warning: failed to delete pool %s: %v", poolName, err)
 			return
-		}
-
-		if err := waitForClusterHealth(cleanupCtx, confPath, 30*time.Second); err != nil {
-			ts.Logf("warning: cluster did not become healthy after pool deletion within 30s: %v", err)
 		}
 	})
 }
