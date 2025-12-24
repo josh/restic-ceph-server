@@ -19,7 +19,6 @@ type ConnectionManager struct {
 	mu                sync.RWMutex
 	conn              *rados.Conn
 	config            CephConfig
-	logger            *slog.Logger
 	reconnecting      bool
 	lastReconnectTime time.Time
 	minReconnectDelay time.Duration
@@ -39,18 +38,17 @@ type CephConfig struct {
 	StripeCount   uint
 }
 
-func NewConnectionManager(config CephConfig, logger *slog.Logger) *ConnectionManager {
+func NewConnectionManager(config CephConfig) *ConnectionManager {
 	cm := &ConnectionManager{
 		config:            config,
-		logger:            logger,
 		minReconnectDelay: 1 * time.Second,
 		maxReconnectDelay: 30 * time.Second,
 	}
 
 	if err := cm.connect(); err != nil {
-		logger.Warn("initial ceph connection failed, will retry on first request", "error", err)
+		slog.Warn("initial ceph connection failed, will retry on first request", "error", err)
 	} else {
-		logger.Info("ceph connection established")
+		slog.Info("ceph connection established")
 	}
 
 	return cm
@@ -107,32 +105,32 @@ func (cm *ConnectionManager) connect() error {
 	clusterMaxSize := int64(0)
 	sizeStr, err := conn.GetConfigOption("osd_max_object_size")
 	if err != nil {
-		cm.logger.Warn("failed to read osd_max_object_size from cluster", "error", err)
+		slog.Warn("failed to read osd_max_object_size from cluster", "error", err)
 	} else {
 		size, err := strconv.ParseInt(sizeStr, 10, 64)
 		if err != nil {
-			cm.logger.Warn("invalid osd_max_object_size value from cluster", "value", sizeStr, "error", err)
+			slog.Warn("invalid osd_max_object_size value from cluster", "value", sizeStr, "error", err)
 		} else if size <= 0 || size > math.MaxUint32 {
-			cm.logger.Warn("osd_max_object_size from cluster out of valid range", "value", size)
+			slog.Warn("osd_max_object_size from cluster out of valid range", "value", size)
 		} else {
 			clusterMaxSize = size
-			cm.logger.Debug("loaded cluster max object size", "max_object_size", size)
+			slog.Debug("loaded cluster max object size", "max_object_size", size)
 		}
 	}
 
 	clusterMaxWriteSize := int64(0)
 	writeSizeStr, err := conn.GetConfigOption("osd_max_write_size")
 	if err != nil {
-		cm.logger.Warn("failed to read osd_max_write_size from cluster", "error", err)
+		slog.Warn("failed to read osd_max_write_size from cluster", "error", err)
 	} else {
 		writeSizeMB, err := strconv.ParseInt(writeSizeStr, 10, 64)
 		if err != nil {
-			cm.logger.Warn("invalid osd_max_write_size value from cluster", "value", writeSizeStr, "error", err)
+			slog.Warn("invalid osd_max_write_size value from cluster", "value", writeSizeStr, "error", err)
 		} else if writeSizeMB <= 0 {
-			cm.logger.Warn("osd_max_write_size from cluster out of valid range", "value", writeSizeMB)
+			slog.Warn("osd_max_write_size from cluster out of valid range", "value", writeSizeMB)
 		} else {
 			clusterMaxWriteSize = writeSizeMB * 1024 * 1024
-			cm.logger.Debug("loaded cluster max write size", "max_write_size", clusterMaxWriteSize)
+			slog.Debug("loaded cluster max write size", "max_write_size", clusterMaxWriteSize)
 		}
 	}
 
@@ -140,7 +138,7 @@ func (cm *ConnectionManager) connect() error {
 	if cm.config.MaxObjectSize > 0 {
 		maxSize = cm.config.MaxObjectSize
 		if clusterMaxSize > 0 && maxSize > clusterMaxSize {
-			cm.logger.Warn("configured max-object-size exceeds cluster limit, writes may fail",
+			slog.Warn("configured max-object-size exceeds cluster limit, writes may fail",
 				"configured", maxSize,
 				"cluster_limit", clusterMaxSize)
 		}
@@ -148,7 +146,7 @@ func (cm *ConnectionManager) connect() error {
 		maxSize = clusterMaxSize
 	} else {
 		maxSize = defaultMaxObjectSize
-		cm.logger.Warn("using default max object size", "default", maxSize)
+		slog.Warn("using default max object size", "default", maxSize)
 	}
 
 	var maxWriteSize int64
@@ -156,7 +154,7 @@ func (cm *ConnectionManager) connect() error {
 		maxWriteSize = clusterMaxWriteSize
 	} else {
 		maxWriteSize = defaultMaxWriteSize
-		cm.logger.Warn("using default max write size", "default", maxWriteSize)
+		slog.Warn("using default max write size", "default", maxWriteSize)
 	}
 
 	stripeUnit := cm.config.StripeUnit
@@ -212,7 +210,7 @@ func (cm *ConnectionManager) GetIOContext() (*rados.IOContext, error) {
 				return nil, err
 			}
 
-			cm.logger.Error("failed to open IO context", "error", err, "attempt", attempt+1)
+			slog.Error("failed to open IO context", "error", err, "attempt", attempt+1)
 			cm.markConnectionBroken()
 			if attempt < maxAttempts-1 {
 				if err := cm.tryReconnect(); err != nil {
@@ -320,13 +318,13 @@ func (cm *ConnectionManager) tryReconnect() error {
 		cm.mu.Unlock()
 	}()
 
-	cm.logger.Info("attempting to reconnect to ceph")
+	slog.Info("attempting to reconnect to ceph")
 	if err := cm.connect(); err != nil {
-		cm.logger.Warn("reconnection failed", "error", err)
+		slog.Warn("reconnection failed", "error", err)
 		return err
 	}
 
-	cm.logger.Info("successfully reconnected to ceph")
+	slog.Info("successfully reconnected to ceph")
 	return nil
 }
 
