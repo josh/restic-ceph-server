@@ -267,14 +267,14 @@ func main() {
 		StripeCount:   config.StripeCount,
 	}
 
-	connMgr := NewConnectionManager(cephConfig, logger)
+	connMgr := NewConnectionManager(cephConfig)
 	defer connMgr.Shutdown()
 
 	maxWriteSize, err := connMgr.GetMaxWriteSize()
 	if err != nil {
-		logger.Warn("failed to get max write size for validation", "error", err)
+		slog.Warn("failed to get max write size for validation", "error", err)
 	} else if config.WriteBufferSize > maxWriteSize {
-		logger.Warn("write buffer size exceeds cluster max write size, writes may be chunked or fail",
+		slog.Warn("write buffer size exceeds cluster max write size, writes may be chunked or fail",
 			"write_buffer_size", config.WriteBufferSize,
 			"cluster_max_write_size", maxWriteSize)
 	}
@@ -282,7 +282,6 @@ func main() {
 	h := &Handler{
 		connMgr:         connMgr,
 		appendOnly:      config.AppendOnly,
-		logger:          logger,
 		striperEnabled:  config.EnableStriper,
 		readBufferSize:  config.ReadBufferSize,
 		writeBufferSize: config.WriteBufferSize,

@@ -24,7 +24,6 @@ import (
 type Handler struct {
 	connMgr         *ConnectionManager
 	appendOnly      bool
-	logger          *slog.Logger
 	striperEnabled  bool
 	readBufferSize  int64
 	writeBufferSize int64
@@ -36,7 +35,6 @@ type HandlerContext struct {
 	radosIO         RadosIOContext
 	striperIO       RadosIOContext
 	maxObjectSize   int64
-	logger          *slog.Logger
 	readBufferSize  int64
 	writeBufferSize int64
 	readBufferPool  *sync.Pool
@@ -78,7 +76,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 }
 
 func (h *Handler) logRequest(method, path string, status int, duration time.Duration, reqBytes, respBytes int64, radosCalls uint64) {
-	h.logger.Info("request",
+	slog.Info("request",
 		"method", method,
 		"path", path,
 		"status", status,
@@ -97,7 +95,7 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 		} else if errors.Is(err, rados.ErrNotFound) {
 			http.NotFound(w, r)
 		} else {
-			h.logger.Error("failed to open IO context", "error", err)
+			slog.Error("failed to open IO context", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 		return nil, false
@@ -105,14 +103,13 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 
 	maxSize, err := h.connMgr.GetMaxObjectSize()
 	if err != nil {
-		h.logger.Error("failed to get cluster max object size", "error", err)
+		slog.Error("failed to get cluster max object size", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return nil, false
 	}
 
 	hctx := &HandlerContext{
 		maxObjectSize:   maxSize,
-		logger:          h.logger,
 		readBufferSize:  h.readBufferSize,
 		writeBufferSize: h.writeBufferSize,
 		readBufferPool:  h.readBufferPool,
@@ -123,13 +120,13 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 	if h.striperEnabled {
 		layout, err := h.connMgr.GetStriperLayout()
 		if err != nil {
-			h.logger.Error("failed to get striper layout", "error", err)
+			slog.Error("failed to get striper layout", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return nil, false
 		}
 		s, err := striper.NewWithLayout(ioctx, layout)
 		if err != nil {
-			h.logger.Error("failed to create striper instance", "error", err)
+			slog.Error("failed to create striper instance", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return nil, false
 		}
@@ -172,15 +169,15 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 			http.Error(w, "write chunk exceeds message limit", http.StatusRequestEntityTooLarge)
 			return
 		case -int(syscall.EOPNOTSUPP):
-			h.logger.Error("operation not supported", "object", object, "error", err)
+			slog.Error("operation not supported", "object", object, "error", err)
 			http.Error(w, "operation not supported", http.StatusInternalServerError)
 			return
 		case -int(syscall.ENOSPC):
-			h.logger.Error("insufficient storage", "object", object, "error", err)
+			slog.Error("insufficient storage", "object", object, "error", err)
 			http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
 			return
 		case -int(syscall.EDQUOT):
-			h.logger.Error("disk quota exceeded", "object", object, "error", err)
+			slog.Error("disk quota exceeded", "object", object, "error", err)
 			http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
 			return
 		}
@@ -198,13 +195,14 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 	case errors.Is(err, errClientAborted):
 		http.Error(w, "client aborted request", http.StatusBadRequest)
 	default:
-		h.logger.Error("failed to serve object", "object", object, "error", err)
+		slog.Error("failed to serve object", "object", object, "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 
 func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	var radosCalls uint64
 	defer func() {
@@ -227,6 +225,7 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	var radosCalls uint64
 	defer func() {
@@ -249,6 +248,7 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	var radosCalls uint64
 	defer func() {
@@ -256,7 +256,7 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	if h.appendOnly {
-		h.logger.Debug("delete blocked in append-only mode", "object", "config")
+		slog.Debug("delete blocked in append-only mode", "object", "config")
 		http.Error(rw, "delete not allowed in append-only mode", http.StatusForbidden)
 		return
 	}
@@ -289,6 +289,7 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	var radosCalls uint64
 	defer func() {
@@ -300,7 +301,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errConnectionUnavailable) {
 			http.Error(rw, "ceph cluster unavailable", http.StatusServiceUnavailable)
 		} else {
-			h.logger.Error("failed to get connection", "error", err)
+			slog.Error("failed to get connection", "error", err)
 			http.Error(rw, "internal server error", http.StatusInternalServerError)
 		}
 		return
@@ -308,7 +309,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 
 	_, err = conn.GetPoolByName(h.connMgr.config.PoolName)
 	if err != nil {
-		h.logger.Warn("pool check failed", "pool", h.connMgr.config.PoolName, "error", err)
+		slog.Warn("pool check failed", "pool", h.connMgr.config.PoolName, "error", err)
 		http.NotFound(rw, r)
 		return
 	}
@@ -337,6 +338,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	var radosCalls uint64
 	defer func() {
@@ -360,7 +362,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 
 	iter, err := hctx.radosIO.Iter()
 	if err != nil {
-		h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("create iterator: %w", err))
+		slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("create iterator: %w", err))
 		http.Error(rw, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -389,7 +391,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !hexBlobIDRegex.MatchString(blobID) {
-			h.logger.Warn("skipping unknown object", "object", objectName)
+			slog.Warn("skipping unknown object", "object", objectName)
 			continue
 		}
 
@@ -398,7 +400,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		if useV2 {
 			_, stat, err := hctx.statRadosObject(baseObjectName)
 			if err != nil {
-				h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("stat %s: %w", baseObjectName, err))
+				slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("stat %s: %w", baseObjectName, err))
 				http.Error(rw, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -412,7 +414,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := iter.Err(); err != nil {
-		h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("iterate objects: %w", err))
+		slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("iterate objects: %w", err))
 		http.Error(rw, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -421,7 +423,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	if useV2 {
 		data, err = json.Marshal(blobInfos)
 		if err != nil {
-			h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("marshal JSON: %w", err))
+			slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("marshal JSON: %w", err))
 			http.Error(rw, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -429,7 +431,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	} else {
 		data, err = json.Marshal(blobNames)
 		if err != nil {
-			h.logger.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("marshal JSON: %w", err))
+			slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("marshal JSON: %w", err))
 			http.Error(rw, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -438,12 +440,13 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 
 	rw.WriteHeader(http.StatusOK)
 	if _, err = rw.Write(data); err != nil {
-		h.logger.Warn("failed to list blobs", "type", blobType, "error", err)
+		slog.Warn("failed to list blobs", "type", blobType, "error", err)
 	}
 }
 
 func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	var radosCalls uint64
 	defer func() {
@@ -480,6 +483,7 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	var radosCalls uint64
 	defer func() {
@@ -516,6 +520,7 @@ func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
 	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	var radosCalls uint64
 	defer func() {
@@ -535,7 +540,7 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.appendOnly && blobType != "locks" {
-		h.logger.Debug("delete blocked in append-only mode", "type", blobType)
+		slog.Debug("delete blocked in append-only mode", "type", blobType)
 		http.Error(rw, "delete not allowed in append-only mode", http.StatusForbidden)
 		return
 	}
@@ -725,7 +730,7 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 	}
 
 	striped := hctx.striperIO != nil && rioctx == hctx.striperIO
-	hctx.logger.Debug("reading blob", "object", object, "size", stat.Size, "striped", striped)
+	slog.Debug("reading blob", "object", object, "size", stat.Size, "striped", striped)
 
 	if stat.Size > uint64(math.MaxInt64) {
 		return fmt.Errorf("object %s size exceeds max int64: %d", object, stat.Size)
@@ -801,12 +806,12 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 		return fmt.Errorf("write object %s: %w", object, err)
 	}
 
-	hctx.logger.Debug("created blob", "object", object, "size", size, "striped", useStriper)
+	slog.Debug("created blob", "object", object, "size", size, "striped", useStriper)
 
 	if expected != [32]byte{} {
 		actual := writer.Sum()
 		if actual != expected {
-			hctx.logger.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
+			slog.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
 			_ = rioctx.Remove(object)
 			return errHashMismatch
 		}
