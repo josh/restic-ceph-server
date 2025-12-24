@@ -8,8 +8,7 @@ exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localh
 
 bin-file zeros large-blob 40000000
 
-stdin large-blob
-exec wc -c
+byte-count large-blob
 stdout '40000000'
 
 ! exec curl --fail --show-error --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000000'

@@ -77,6 +77,7 @@ func TestScript(t *testing.T) {
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
 			"bin-cmp":            cmdBinCmp,
 			"bin-file":           cmdBinFile,
+			"byte-count":         cmdByteCount,
 			"create-pool":        cmdCreatePool,
 			"rados-object-count": cmdRadosObjectCount,
 			"scrubhex":           cmdScrubHex,
@@ -918,4 +919,20 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 			return
 		}
 	})
+}
+
+func cmdByteCount(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! byte-count")
+	}
+	if len(args) != 1 {
+		ts.Fatalf("usage: byte-count <file>")
+	}
+
+	data, err := os.ReadFile(ts.MkAbs(args[0]))
+	if err != nil {
+		ts.Fatalf("failed to read file: %v", err)
+	}
+
+	_, _ = fmt.Fprintf(ts.Stdout(), "%d\n", len(data))
 }
