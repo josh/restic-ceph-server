@@ -1,4 +1,4 @@
-tail-server-log
+tail-logs
 create-pool
 
 exec restic-ceph-server --append-only --listen $WORK/restic.sock &server&

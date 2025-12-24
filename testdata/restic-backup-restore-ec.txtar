@@ -1,4 +1,4 @@
-tail-server-log
+tail-logs
 create-pool erasure
 
 exec restic init --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt

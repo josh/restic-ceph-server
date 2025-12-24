@@ -1,4 +1,4 @@
-tail-server-log
+tail-logs
 create-pool
 
 exec systemd-socket-activate --setenv=CEPH_POOL --setenv=CEPH_CONF --setenv=CEPH_SERVER_VERBOSE --setenv=CEPH_SERVER_LOG_FILE --listen=127.0.0.1:$PORT restic-ceph-server &server&
