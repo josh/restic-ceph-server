@@ -75,11 +75,11 @@ func TestScript(t *testing.T) {
 		UpdateScripts:       updateScripts,
 		Deadline:            deadline,
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
+			"bin-cmp":            cmdBinCmp,
 			"bin-file":           cmdBinFile,
 			"create-pool":        cmdCreatePool,
 			"rados-object-count": cmdRadosObjectCount,
 			"scrubhex":           cmdScrubHex,
-			"sha256":             cmdSha256,
 			"tail-server-log":    cmdTailServerLog,
 			"wait4socket":        cmdWait4socket,
 		},
@@ -729,6 +729,88 @@ func (onesReader) Read(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+func cmdBinCmp(ts *testscript.TestScript, neg bool, args []string) {
+	if len(args) != 2 {
+		ts.Fatalf("usage: bin-cmp file1 file2")
+	}
+
+	file1Path := ts.MkAbs(args[0])
+	file2Path := ts.MkAbs(args[1])
+
+	data1, err := os.ReadFile(file1Path)
+	if err != nil {
+		ts.Fatalf("failed to read %s: %v", args[0], err)
+	}
+
+	data2, err := os.ReadFile(file2Path)
+	if err != nil {
+		ts.Fatalf("failed to read %s: %v", args[1], err)
+	}
+
+	filesMatch := bytes.Equal(data1, data2)
+
+	if neg {
+		if filesMatch {
+			ts.Fatalf("files are identical")
+		}
+		return
+	}
+
+	if filesMatch {
+		return
+	}
+
+	hash1 := sha256.Sum256(data1)
+	hash2 := sha256.Sum256(data2)
+
+	var errMsg strings.Builder
+	fmt.Fprintf(&errMsg, "files differ:\n")
+	fmt.Fprintf(&errMsg, "  %s:\n", args[0])
+	fmt.Fprintf(&errMsg, "    size: %d bytes\n", len(data1))
+	fmt.Fprintf(&errMsg, "    sha256: %s\n", hex.EncodeToString(hash1[:]))
+	fmt.Fprintf(&errMsg, "  %s:\n", args[1])
+	fmt.Fprintf(&errMsg, "    size: %d bytes\n", len(data2))
+	fmt.Fprintf(&errMsg, "    sha256: %s\n", hex.EncodeToString(hash2[:]))
+
+	if len(data1) != len(data2) {
+		ts.Fatalf("%s", errMsg.String())
+	}
+
+	var diffOffset int
+	for i := 0; i < len(data1); i++ {
+		if data1[i] != data2[i] {
+			diffOffset = i
+			break
+		}
+	}
+
+	fmt.Fprintf(&errMsg, "  first difference at byte offset: %d (0x%x)\n\n", diffOffset, diffOffset)
+
+	const contextSize = 32
+	start := diffOffset - contextSize
+	if start < 0 {
+		start = 0
+	}
+
+	end1 := diffOffset + contextSize
+	if end1 > len(data1) {
+		end1 = len(data1)
+	}
+
+	end2 := diffOffset + contextSize
+	if end2 > len(data2) {
+		end2 = len(data2)
+	}
+
+	fmt.Fprintf(&errMsg, "--- %s context (bytes %d-%d) ---\n", args[0], start, end1)
+	fmt.Fprintf(&errMsg, "%s\n", hex.Dump(data1[start:end1]))
+
+	fmt.Fprintf(&errMsg, "--- %s context (bytes %d-%d) ---\n", args[1], start, end2)
+	fmt.Fprintf(&errMsg, "%s", hex.Dump(data2[start:end2]))
+
+	ts.Fatalf("%s", errMsg.String())
+}
+
 func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 	ctx, ok := ts.Value("ctx").(context.Context)
 	if !ok {
@@ -836,29 +918,4 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 			return
 		}
 	})
-}
-
-func cmdSha256(ts *testscript.TestScript, neg bool, args []string) {
-	if neg {
-		ts.Fatalf("unsupported: ! sha256")
-	}
-	if len(args) != 2 {
-		ts.Fatalf("usage: sha256 <input-file> <output-file>")
-	}
-
-	inputPath := args[0]
-	outputPath := args[1]
-
-	data, err := os.ReadFile(ts.MkAbs(inputPath))
-	if err != nil {
-		ts.Fatalf("failed to read input file: %v", err)
-	}
-
-	hash := sha256.Sum256(data)
-	hashHex := hex.EncodeToString(hash[:])
-
-	err = os.WriteFile(ts.MkAbs(outputPath), []byte(hashHex), 0o644)
-	if err != nil {
-		ts.Fatalf("failed to write output file: %v", err)
-	}
 }
