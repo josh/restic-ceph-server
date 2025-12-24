@@ -57,14 +57,11 @@ func TestScript(t *testing.T) {
 	confPath, err := startCephCluster(t, ctx, cephDaemonLogs)
 	if err != nil {
 		detachSetup()
-		t.Log("\n=== Ceph cluster setup logs ===")
+		t.Log("=== Ceph cluster setup logs ===")
 		_, _ = io.Copy(t.Output(), &setupBuffer)
 		t.Fatal(err)
 	}
 	detachSetup()
-
-	detach := cephDaemonLogs.AttachTest(t)
-	defer detach()
 
 	updateScripts, _ := strconv.ParseBool(os.Getenv("UPDATE_SCRIPTS"))
 
@@ -81,7 +78,7 @@ func TestScript(t *testing.T) {
 			"create-pool":        cmdCreatePool,
 			"rados-object-count": cmdRadosObjectCount,
 			"scrubhex":           cmdScrubHex,
-			"tail-server-log":    cmdTailServerLog,
+			"tail-logs":          cmdTailLogs,
 			"wait4socket":        cmdWait4socket,
 		},
 		Setup: func(env *testscript.Env) error {
@@ -137,14 +134,14 @@ func touchServerLog(t *testing.T, tmpDir string) (string, error) {
 	return logFile, nil
 }
 
-func cmdTailServerLog(ts *testscript.TestScript, neg bool, args []string) {
+func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! tail-logs")
+	}
+
 	ctx, ok := ts.Value("ctx").(context.Context)
 	if !ok {
 		ts.Fatalf("context not found in testscript Env.Values")
-	}
-
-	if neg {
-		ts.Fatalf("unsupported: ! tail-server-log")
 	}
 
 	logFile := ts.Getenv("CEPH_SERVER_LOG_FILE")
@@ -162,25 +159,50 @@ func cmdTailServerLog(ts *testscript.TestScript, neg bool, args []string) {
 		}
 	})
 
+	pipeReader, detach := cephDaemonLogs.AttachPipe()
+	ts.Defer(detach)
+
+	serverReader := bufio.NewReader(f)
+	cephReader := bufio.NewReader(pipeReader)
+
 	go func() {
-		reader := bufio.NewReader(f)
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				line, err := reader.ReadString('\n')
+				line, err := serverReader.ReadString('\n')
 				if err != nil {
 					if err == io.EOF {
 						continue
 					}
-					ts.Logf("tail-server-log: failed to read from log file: %v", err)
+					ts.Logf("tail-server-log: error: %v", err)
 					return
 				}
 				ts.Logf("[restic-ceph-server] %s", strings.TrimRight(line, "\n"))
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				line, err := cephReader.ReadString('\n')
+				if err != nil {
+					if err == io.EOF {
+						continue
+					}
+					ts.Logf("tail-ceph-log: error: %v", err)
+					return
+				}
+				ts.Logf("[ceph] %s", strings.TrimRight(line, "\n"))
 			}
 		}
 	}()
@@ -511,9 +533,14 @@ func (ld *LogDemux) Attach(writer io.Writer) func() {
 	}
 }
 
-func (ld *LogDemux) AttachTest(t *testing.T) func() {
-	t.Helper()
-	return ld.Attach(t.Output())
+func (ld *LogDemux) AttachPipe() (*io.PipeReader, func()) {
+	pr, pw := io.Pipe()
+	detach := ld.Attach(pw)
+
+	return pr, func() {
+		detach()
+		_ = pw.Close()
+	}
 }
 
 func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {

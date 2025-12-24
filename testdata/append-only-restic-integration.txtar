@@ -1,4 +1,4 @@
-tail-server-log
+tail-logs
 create-pool
 
 env TZ=UTC
