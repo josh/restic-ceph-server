@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -283,20 +282,8 @@ func main() {
 		connMgr:         connMgr,
 		appendOnly:      config.AppendOnly,
 		striperEnabled:  config.EnableStriper,
-		readBufferSize:  config.ReadBufferSize,
-		writeBufferSize: config.WriteBufferSize,
-		readBufferPool: &sync.Pool{
-			New: func() interface{} {
-				buf := make([]byte, config.ReadBufferSize)
-				return &buf
-			},
-		},
-		writeBufferPool: &sync.Pool{
-			New: func() interface{} {
-				buf := make([]byte, config.WriteBufferSize)
-				return &buf
-			},
-		},
+		readBufferPool:  NewBufferPool(config.ReadBufferSize),
+		writeBufferPool: NewBufferPool(config.WriteBufferSize),
 	}
 
 	mux := http.NewServeMux()
