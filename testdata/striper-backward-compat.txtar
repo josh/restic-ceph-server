@@ -20,9 +20,7 @@ exec restic-ceph-server --listen $WORK/restic.sock --enable-striper &server2&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --output downloaded-blob 'http://localhost/data/7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9'
-sha256 downloaded-blob downloaded-blob-sha256
-sha256 small-blob small-blob-sha256
-cmp downloaded-blob-sha256 small-blob-sha256
+bin-cmp downloaded-blob small-blob
 
 exec curl --silent --unix-socket $WORK/restic.sock --head --include 'http://localhost/data/7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9'
 stdout 'HTTP/.* 200'

@@ -21,8 +21,6 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --
 stdout '200'
 
 exec curl --silent --unix-socket $WORK/restic.sock --request GET http://localhost/data/5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1 --output curl-output
-sha256 curl-output curl-output-sha256
-sha256 test-data test-data-sha256
-cmp curl-output-sha256 test-data-sha256
+bin-cmp curl-output test-data
 
 kill server
