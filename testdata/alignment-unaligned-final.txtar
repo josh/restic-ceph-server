@@ -1,0 +1,23 @@
+tail-logs
+create-pool
+
+exec restic-ceph-server --listen $WORK/restic.sock --enable-striper &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file zeros unaligned-final 33557536
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @unaligned-final 'http://localhost/data/ae3bb07677575eb2b088794b46d3388cfcac68cea9f0c86af4906533b9634198'
+
+exec curl --silent --unix-socket $WORK/restic.sock --head --include 'http://localhost/data/ae3bb07677575eb2b088794b46d3388cfcac68cea9f0c86af4906533b9634198'
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 33557536'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/ae3bb07677575eb2b088794b46d3388cfcac68cea9f0c86af4906533b9634198' --output downloaded
+bin-cmp downloaded unaligned-final
+
+exec rados --pool $CEPH_POOL ls
+stdout 'data/ae3bb07677575eb2b088794b46d3388cfcac68cea9f0c86af4906533b9634198'
+
+kill server
