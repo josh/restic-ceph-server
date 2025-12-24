@@ -130,7 +130,7 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return nil, false
 		}
-		hctx.striperIO = &striperIOContextWrapper{striper: s, radosCalls: &hctx.radosCalls}
+		hctx.striperIO = &striperIOContextWrapper{striper: s, ioctx: ioctx, radosCalls: &hctx.radosCalls}
 	}
 
 	return hctx, true
@@ -792,13 +792,11 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 		rioctx = hctx.radosIO
 	}
 
-	writer := NewRadosObjectWriter(rioctx, object)
-	bufPtr := hctx.writeBufferPool.Get().(*[]byte)
-	buf := *bufPtr
-	defer func() {
-		hctx.writeBufferPool.Put(bufPtr)
-	}()
-	if _, err := io.CopyBuffer(writer, r.Body, buf); err != nil {
+	writer, err := NewRadosObjectWriter(rioctx, object, hctx.writeBufferPool, hctx.writeBufferSize)
+	if err != nil {
+		return fmt.Errorf("create writer for %s: %w", object, err)
+	}
+	if _, err := io.Copy(writer, r.Body); err != nil {
 		_ = rioctx.Remove(object)
 		if errors.Is(err, context.Canceled) {
 			return errClientAborted
