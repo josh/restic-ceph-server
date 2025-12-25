@@ -19,6 +19,35 @@ type StatInfo struct {
 	ModTime time.Time
 }
 
+type BufferPool struct {
+	pool *sync.Pool
+	size int64
+}
+
+func NewBufferPool(size int64) *BufferPool {
+	return &BufferPool{
+		pool: &sync.Pool{
+			New: func() interface{} {
+				buf := make([]byte, size)
+				return &buf
+			},
+		},
+		size: size,
+	}
+}
+
+func (bp *BufferPool) Get() *[]byte {
+	return bp.pool.Get().(*[]byte)
+}
+
+func (bp *BufferPool) Put(bufPtr *[]byte) {
+	bp.pool.Put(bufPtr)
+}
+
+func (bp *BufferPool) Size() int64 {
+	return bp.size
+}
+
 type RadosIOContext interface {
 	Stat(object string) (StatInfo, error)
 	Read(object string, buf []byte, offset uint64) (int, error)
@@ -29,11 +58,15 @@ type RadosIOContext interface {
 	Iter() (*rados.Iter, error)
 	Alignment() (uint64, error)
 	RequiresAlignment() (bool, error)
+	ReadBufferPool() *BufferPool
+	WriteBufferPool() *BufferPool
 }
 
 type radosIOContextWrapper struct {
-	ioctx      *rados.IOContext
-	radosCalls *uint64
+	ioctx       *rados.IOContext
+	radosCalls  *uint64
+	readBuffer  *BufferPool
+	writeBuffer *BufferPool
 }
 
 func (r *radosIOContextWrapper) Stat(object string) (StatInfo, error) {
@@ -86,10 +119,20 @@ func (r *radosIOContextWrapper) RequiresAlignment() (bool, error) {
 	return r.ioctx.RequiresAlignment()
 }
 
+func (r *radosIOContextWrapper) ReadBufferPool() *BufferPool {
+	return r.readBuffer
+}
+
+func (r *radosIOContextWrapper) WriteBufferPool() *BufferPool {
+	return r.writeBuffer
+}
+
 type striperIOContextWrapper struct {
-	striper    *striper.Striper
-	ioctx      *rados.IOContext
-	radosCalls *uint64
+	striper     *striper.Striper
+	ioctx       *rados.IOContext
+	radosCalls  *uint64
+	readBuffer  *BufferPool
+	writeBuffer *BufferPool
 }
 
 func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
@@ -141,17 +184,23 @@ func (s *striperIOContextWrapper) RequiresAlignment() (bool, error) {
 	return s.ioctx.RequiresAlignment()
 }
 
+func (s *striperIOContextWrapper) ReadBufferPool() *BufferPool {
+	return s.readBuffer
+}
+
+func (s *striperIOContextWrapper) WriteBufferPool() *BufferPool {
+	return s.writeBuffer
+}
+
 type RadosObjectWriter struct {
 	ctx           RadosIOContext
 	object        string
 	hasher        hash.Hash
-	bufferPool    *sync.Pool
-	bufferSize    int64
 	alignment     uint64
 	requiresAlign bool
 }
 
-func NewRadosObjectWriter(ctx RadosIOContext, object string, bufferPool *sync.Pool, bufferSize int64) (*RadosObjectWriter, error) {
+func NewRadosObjectWriter(ctx RadosIOContext, object string) (*RadosObjectWriter, error) {
 	requiresAlign, err := ctx.RequiresAlignment()
 	if err != nil {
 		requiresAlign = false
@@ -167,6 +216,7 @@ func NewRadosObjectWriter(ctx RadosIOContext, object string, bufferPool *sync.Po
 	}
 
 	if requiresAlign && alignment > 1 {
+		bufferSize := ctx.WriteBufferPool().Size()
 		if bufferSize%int64(alignment) != 0 {
 			slog.Warn("write buffer size not aligned to required alignment",
 				"buffer_size", bufferSize,
@@ -179,20 +229,14 @@ func NewRadosObjectWriter(ctx RadosIOContext, object string, bufferPool *sync.Po
 		ctx:           ctx,
 		object:        object,
 		hasher:        sha256.New(),
-		bufferPool:    bufferPool,
-		bufferSize:    bufferSize,
 		alignment:     alignment,
 		requiresAlign: requiresAlign,
 	}, nil
 }
 
-func (w *RadosObjectWriter) Write(p []byte) (int, error) {
-	return 0, fmt.Errorf("Write called directly on RadosObjectWriter; should use ReadFrom or io.Copy")
-}
-
 func (w *RadosObjectWriter) ReadFrom(r io.Reader) (int64, error) {
-	bufPtr := w.bufferPool.Get().(*[]byte)
-	defer w.bufferPool.Put(bufPtr)
+	bufPtr := w.ctx.WriteBufferPool().Get()
+	defer w.ctx.WriteBufferPool().Put(bufPtr)
 	buffer := *bufPtr
 
 	totalRead := int64(0)
@@ -209,7 +253,7 @@ func (w *RadosObjectWriter) ReadFrom(r io.Reader) (int64, error) {
 			return totalRead, readErr
 		}
 
-		if firstRead && isEOF && bufferOffset > 0 {
+		if firstRead && isEOF && bufferOffset >= 0 {
 			data := buffer[:bufferOffset]
 			w.hasher.Write(data)
 			if err := w.ctx.WriteFull(w.object, data); err != nil {
@@ -228,6 +272,9 @@ func (w *RadosObjectWriter) ReadFrom(r io.Reader) (int64, error) {
 		if w.requiresAlign && w.alignment > 1 && !isEOF {
 			bytesToWrite = (bufferOffset / int(w.alignment)) * int(w.alignment)
 			if bytesToWrite == 0 {
+				if bufferOffset == len(buffer) {
+					return totalRead, fmt.Errorf("buffer size %d is smaller than required alignment %d", len(buffer), w.alignment)
+				}
 				continue
 			}
 		}
@@ -257,20 +304,56 @@ func (w *RadosObjectWriter) Sum() [32]byte {
 type RadosObjectReader struct {
 	ctx    RadosIOContext
 	object string
-	size   int64
+	offset int64
+	limit  int64
 }
 
-func NewRadosObjectReaderWithSize(ctx RadosIOContext, object string, size int64) *RadosObjectReader {
+func NewRadosObjectReader(ctx RadosIOContext, object string, offset, length int64) *RadosObjectReader {
 	return &RadosObjectReader{
 		ctx:    ctx,
 		object: object,
-		size:   size,
+		offset: offset,
+		limit:  length,
 	}
 }
 
-func (r *RadosObjectReader) ReadAt(p []byte, off int64) (int, error) {
-	if off >= r.size {
-		return 0, io.EOF
+func (r *RadosObjectReader) WriteTo(w io.Writer) (int64, error) {
+	bufPtr := r.ctx.ReadBufferPool().Get()
+	defer r.ctx.ReadBufferPool().Put(bufPtr)
+	buffer := *bufPtr
+
+	totalWritten := int64(0)
+	currentOffset := r.offset
+	remaining := r.limit
+
+	for remaining > 0 {
+		toRead := int64(len(buffer))
+		if toRead > remaining {
+			toRead = remaining
+		}
+
+		n, err := r.ctx.Read(r.object, buffer[:toRead], uint64(currentOffset))
+		if err != nil && err != io.EOF {
+			return totalWritten, fmt.Errorf("read %s at offset %d: %w", r.object, currentOffset, err)
+		}
+
+		if n > 0 {
+			written, err := w.Write(buffer[:n])
+			totalWritten += int64(written)
+			if err != nil {
+				return totalWritten, err
+			}
+			if written != n {
+				return totalWritten, io.ErrShortWrite
+			}
+			currentOffset += int64(n)
+			remaining -= int64(n)
+		}
+
+		if err == io.EOF || n == 0 {
+			break
+		}
 	}
-	return r.ctx.Read(r.object, p, uint64(off))
+
+	return totalWritten, nil
 }
