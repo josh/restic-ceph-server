@@ -1,0 +1,25 @@
+tail-logs
+create-pool
+
+exec rados --conf $CEPH_CONF --pool $CEPH_POOL put data/21c5ebd4761bc9fafc284444c20b168af1e542eba59ed9b56aa6a846acabe901 corrupted-data
+
+exec rados --conf $CEPH_CONF --pool $CEPH_POOL get data/21c5ebd4761bc9fafc284444c20b168af1e542eba59ed9b56aa6a846acabe901 retrieved-corrupt.txt
+cmp retrieved-corrupt.txt corrupted-data
+
+exec restic-ceph-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @correct-data http://localhost/data/21c5ebd4761bc9fafc284444c20b168af1e542eba59ed9b56aa6a846acabe901 --output response.txt
+stdout '200'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET http://localhost/data/21c5ebd4761bc9fafc284444c20b168af1e542eba59ed9b56aa6a846acabe901
+cmp stdout correct-data
+
+kill server
+
+-- correct-data --
+correct content
+-- corrupted-data --
+CORRUPTED DATA THAT DOESNT MATCH SHA256

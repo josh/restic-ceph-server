@@ -357,3 +357,15 @@ func (r *RadosObjectReader) WriteTo(w io.Writer) (int64, error) {
 
 	return totalWritten, nil
 }
+
+func validateRadosObjectHash(ctx RadosIOContext, object string, stat StatInfo) ([32]byte, error) {
+	reader := NewRadosObjectReader(ctx, object, 0, int64(stat.Size))
+	hasher := sha256.New()
+
+	_, err := reader.WriteTo(hasher)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("read object for validation: %w", err)
+	}
+
+	return [32]byte(hasher.Sum(nil)), nil
+}
