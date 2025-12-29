@@ -771,15 +771,32 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 		return err
 	}
 
-	_, _, err = hctx.statRadosObject(object)
-	if err == nil {
-		return errObjectExists
-	}
-	if !errors.Is(err, rados.ErrNotFound) {
-		return fmt.Errorf("stat object %s: %w", object, err)
+	rioctx, stat, statErr := hctx.statRadosObject(object)
+	if statErr == nil {
+		if expected == [32]byte{} {
+			return errObjectExists
+		}
+
+		actual, err := validateRadosObjectHash(rioctx, object, stat)
+		if err != nil {
+			slog.Warn("failed to read existing object, treating as corrupt", "object", object, "error", err)
+			if err := rioctx.Remove(object); err != nil {
+				return fmt.Errorf("remove unreadable object %s: %w", object, err)
+			}
+		} else if actual == expected {
+			slog.Debug("existing object validated", "object", object, "hash", fmt.Sprintf("%x", actual))
+			w.WriteHeader(http.StatusForbidden)
+			return nil
+		} else {
+			slog.Warn("corrupt object detected", "object", object, "expected", fmt.Sprintf("%x", expected), "actual", fmt.Sprintf("%x", actual))
+			if err := rioctx.Remove(object); err != nil {
+				return fmt.Errorf("remove corrupt object %s: %w", object, err)
+			}
+		}
+	} else if !errors.Is(statErr, rados.ErrNotFound) {
+		return fmt.Errorf("stat object %s: %w", object, statErr)
 	}
 
-	var rioctx RadosIOContext
 	if useStriper {
 		rioctx = hctx.striperIO
 	} else {
