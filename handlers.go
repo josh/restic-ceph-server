@@ -79,25 +79,15 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 	)
 }
 
-func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*HandlerContext, bool) {
+func (h *Handler) openIOContext(ctx context.Context) (*HandlerContext, error) {
 	ioctx, err := h.connMgr.GetIOContext()
 	if err != nil {
-		if errors.Is(err, errConnectionUnavailable) {
-			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
-		} else if errors.Is(err, rados.ErrNotFound) {
-			http.NotFound(w, r)
-		} else {
-			slog.Error("failed to open IO context", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-		}
-		return nil, false
+		return nil, err
 	}
 
 	maxSize, err := h.connMgr.GetMaxObjectSize()
 	if err != nil {
-		slog.Error("failed to get cluster max object size", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return nil, false
+		return nil, fmt.Errorf("get max object size: %w", err)
 	}
 
 	hctx := &HandlerContext{
@@ -114,15 +104,11 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 	if h.striperEnabled {
 		layout, err := h.connMgr.GetStriperLayout()
 		if err != nil {
-			slog.Error("failed to get striper layout", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return nil, false
+			return nil, fmt.Errorf("get striper layout: %w", err)
 		}
 		s, err := striper.NewWithLayout(ioctx, layout)
 		if err != nil {
-			slog.Error("failed to create striper instance", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return nil, false
+			return nil, fmt.Errorf("create striper: %w", err)
 		}
 		hctx.striperIO = &striperIOContextWrapper{
 			striper:     s,
@@ -133,6 +119,23 @@ func (h *Handler) openIOContext(w http.ResponseWriter, r *http.Request) (*Handle
 		}
 	}
 
+	return hctx, nil
+}
+
+func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request) (*HandlerContext, bool) {
+	hctx, err := h.openIOContext(r.Context())
+	if err != nil {
+		switch {
+		case errors.Is(err, errConnectionUnavailable):
+			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		case errors.Is(err, rados.ErrNotFound):
+			http.NotFound(w, r)
+		default:
+			slog.Error("failed to open IO context", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+		return nil, false
+	}
 	return hctx, true
 }
 
@@ -209,7 +212,7 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
-	hctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -232,7 +235,7 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
-	hctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -261,7 +264,7 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -324,7 +327,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -351,7 +354,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -465,7 +468,7 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -502,7 +505,7 @@ func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r)
 	if !ok {
 		return
 	}
@@ -545,7 +548,7 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r)
 	if !ok {
 		return
 	}
