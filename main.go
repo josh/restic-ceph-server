@@ -134,7 +134,7 @@ func parseConfig() (Config, error) {
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	flag.Var(&listeners, "listen", "Address or Unix socket path to listen on, repeatable")
 	flag.BoolVar(&useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
-	flag.DurationVar(&shutdownTimeout, "shutdown-timeout", 30*time.Second, "graceful shutdown timeout for listeners")
+	flag.DurationVar(&shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
 	flag.BoolVar(&appendOnly, "append-only", false, "enable append-only mode (delete allowed for locks only)")
 	flag.DurationVar(&maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
 	flag.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
