@@ -3,7 +3,7 @@ module github.com/josh/restic-ceph-server
 go 1.25.5
 
 require (
-	github.com/ceph/go-ceph v0.36.0
+	github.com/ceph/go-ceph v0.37.0
 	github.com/rogpeppe/go-internal v1.14.1
 	golang.org/x/net v0.48.0
 )
