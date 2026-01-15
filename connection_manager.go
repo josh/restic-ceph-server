@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
-	"github.com/ceph/go-ceph/rados/striper"
 )
 
 var errConnectionUnavailable = errors.New("ceph connection unavailable")
@@ -25,7 +24,6 @@ type ConnectionManager struct {
 	maxReconnectDelay time.Duration
 	maxObjectSize     int64
 	maxWriteSize      int64
-	striperLayout     striper.Layout
 }
 
 type CephConfig struct {
@@ -34,8 +32,6 @@ type CephConfig struct {
 	ClientID      string
 	CephConf      string
 	MaxObjectSize int64
-	StripeUnit    uint
-	StripeCount   uint
 }
 
 func NewConnectionManager(config CephConfig) *ConnectionManager {
@@ -157,23 +153,11 @@ func (cm *ConnectionManager) connect() error {
 		slog.Warn("using default max write size", "default", maxWriteSize)
 	}
 
-	stripeUnit := cm.config.StripeUnit
-	if stripeUnit == 0 {
-		stripeUnit = uint(maxSize)
-	}
-
-	layout := striper.Layout{
-		StripeUnit:  stripeUnit,
-		StripeCount: cm.config.StripeCount,
-		ObjectSize:  uint(maxSize),
-	}
-
 	cm.mu.Lock()
 	oldConn := cm.conn
 	cm.conn = conn
 	cm.maxObjectSize = maxSize
 	cm.maxWriteSize = maxWriteSize
-	cm.striperLayout = layout
 	cm.mu.Unlock()
 
 	if oldConn != nil {
@@ -269,17 +253,6 @@ func (cm *ConnectionManager) GetMaxWriteSize() (int64, error) {
 	}
 
 	return cm.maxWriteSize, nil
-}
-
-func (cm *ConnectionManager) GetStriperLayout() (striper.Layout, error) {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-
-	if cm.conn == nil {
-		return striper.Layout{}, errConnectionUnavailable
-	}
-
-	return cm.striperLayout, nil
 }
 
 func (cm *ConnectionManager) markConnectionBroken() {
