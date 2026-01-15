@@ -34,7 +34,6 @@ const (
 	defaultReadBufferSize  int64 = 16 * 1024 * 1024
 	defaultWriteBufferSize int64 = 16 * 1024 * 1024
 	defaultMaxWriteSize    int64 = 90 * 1024 * 1024
-	defaultStripeCount     uint  = 1
 )
 
 func initLogger(verbose bool, logFilePath string) error {
@@ -79,18 +78,6 @@ func parseInt64Env(key string, defaultVal int64) int64 {
 	return parsed
 }
 
-func parseUintEnv(key string, defaultVal uint) uint {
-	val := os.Getenv(key)
-	if val == "" {
-		return defaultVal
-	}
-	parsed, err := strconv.ParseUint(val, 10, 64)
-	if err != nil {
-		return defaultVal
-	}
-	return uint(parsed)
-}
-
 type Config struct {
 	Verbose         bool
 	Listeners       listenerFlags
@@ -107,8 +94,6 @@ type Config struct {
 	ReadBufferSize  int64
 	WriteBufferSize int64
 	MaxObjectSize   int64
-	StripeUnit      uint
-	StripeCount     uint
 }
 
 func parseConfig() (Config, error) {
@@ -127,8 +112,6 @@ func parseConfig() (Config, error) {
 	var readBufferSize int64
 	var writeBufferSize int64
 	var maxObjectSize int64
-	var stripeUnit uint
-	var stripeCount uint
 
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
@@ -146,8 +129,6 @@ func parseConfig() (Config, error) {
 	flag.Int64Var(&readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
 	flag.Int64Var(&writeBufferSize, "write-buffer-size", defaultWriteBufferSize, "buffer size for writing objects in bytes")
 	flag.Int64Var(&maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
-	flag.UintVar(&stripeUnit, "stripe-unit", 0, "striper stripe unit size (0 = use max object size)")
-	flag.UintVar(&stripeCount, "stripe-count", defaultStripeCount, "striper stripe count")
 	flag.Parse()
 
 	if !verbose {
@@ -194,14 +175,6 @@ func parseConfig() (Config, error) {
 		maxObjectSize = parseInt64Env("CEPH_SERVER_MAX_OBJECT_SIZE", maxObjectSize)
 	}
 
-	if stripeUnit == 0 {
-		stripeUnit = parseUintEnv("CEPH_SERVER_STRIPE_UNIT", stripeUnit)
-	}
-
-	if stripeCount == defaultStripeCount {
-		stripeCount = parseUintEnv("CEPH_SERVER_STRIPE_COUNT", stripeCount)
-	}
-
 	if readBufferSize <= 0 {
 		return Config{}, fmt.Errorf("read-buffer-size must be positive, got %d", readBufferSize)
 	}
@@ -212,10 +185,6 @@ func parseConfig() (Config, error) {
 
 	if maxObjectSize < 0 {
 		return Config{}, fmt.Errorf("max-object-size cannot be negative, got %d", maxObjectSize)
-	}
-
-	if stripeCount == 0 {
-		return Config{}, fmt.Errorf("stripe-count must be positive, got %d", stripeCount)
 	}
 
 	return Config{
@@ -234,8 +203,6 @@ func parseConfig() (Config, error) {
 		ReadBufferSize:  readBufferSize,
 		WriteBufferSize: writeBufferSize,
 		MaxObjectSize:   maxObjectSize,
-		StripeUnit:      stripeUnit,
-		StripeCount:     stripeCount,
 	}, nil
 }
 
@@ -262,8 +229,6 @@ func main() {
 		ClientID:      config.ClientID,
 		CephConf:      config.CephConf,
 		MaxObjectSize: config.MaxObjectSize,
-		StripeUnit:    config.StripeUnit,
-		StripeCount:   config.StripeCount,
 	}
 
 	connMgr := NewConnectionManager(cephConfig)

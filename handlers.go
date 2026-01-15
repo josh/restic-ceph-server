@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
-	"github.com/ceph/go-ceph/rados/striper"
 )
 
 type Handler struct {
@@ -102,17 +101,13 @@ func (h *Handler) openIOContext(ctx context.Context) (*HandlerContext, error) {
 	}
 
 	if h.striperEnabled {
-		layout, err := h.connMgr.GetStriperLayout()
+		maxObjectSize, err := h.connMgr.GetMaxObjectSize()
 		if err != nil {
-			return nil, fmt.Errorf("get striper layout: %w", err)
-		}
-		s, err := striper.NewWithLayout(ioctx, layout)
-		if err != nil {
-			return nil, fmt.Errorf("create striper: %w", err)
+			return nil, fmt.Errorf("get max object size: %w", err)
 		}
 		hctx.striperIO = &striperIOContextWrapper{
-			striper:     s,
 			ioctx:       ioctx,
+			objectSize:  uint64(maxObjectSize),
 			radosCalls:  &hctx.radosCalls,
 			readBuffer:  h.readBufferPool,
 			writeBuffer: h.writeBufferPool,
