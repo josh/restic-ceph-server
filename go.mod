@@ -1,4 +1,4 @@
-module github.com/josh/restic-ceph-server
+module github.com/josh/restic-rados-server
 
 go 1.25.5
 

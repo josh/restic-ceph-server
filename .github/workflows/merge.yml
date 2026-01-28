@@ -9,7 +9,7 @@ permissions:
 jobs:
   merge:
     runs-on: ubuntu-slim
-    if: github.actor == 'dependabot[bot]' && github.repository == 'josh/restic-ceph-server'
+    if: github.actor == 'dependabot[bot]' && github.repository == 'josh/restic-rados-server'
 
     steps:
       - name: Dependabot metadata

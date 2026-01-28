@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic init --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 
 mkdir data
 bin-file rand data/blob0.bin 16384
@@ -13,9 +13,9 @@ bin-file rand data/blob5.bin 16384
 bin-file rand data/blob6.bin 16384
 bin-file rand data/blob7.bin 16384
 
-exec restic backup data --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 
-exec restic check --json --read-data-subset=1/1 --option rclone.program=restic-ceph-server --repo rclone: --password-file password.txt
+exec restic check --json --read-data-subset=1/1 --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 stdin stdout
 exec jq --slurp --from-file expr.jq
 cmp stdout check.json
