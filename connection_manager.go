@@ -15,15 +15,17 @@ import (
 var errConnectionUnavailable = errors.New("ceph connection unavailable")
 
 type ConnectionManager struct {
-	mu                sync.RWMutex
-	conn              *rados.Conn
-	config            CephConfig
-	reconnecting      bool
-	lastReconnectTime time.Time
-	minReconnectDelay time.Duration
-	maxReconnectDelay time.Duration
-	maxObjectSize     int64
-	maxWriteSize      int64
+	mu                    sync.RWMutex
+	conn                  *rados.Conn
+	config                CephConfig
+	reconnecting          bool
+	lastReconnectTime     time.Time
+	minReconnectDelay     time.Duration
+	maxReconnectDelay     time.Duration
+	maxObjectSize         int64
+	maxWriteSize          int64
+	poolRequiresAlignment bool
+	poolAlignment         uint64
 }
 
 type CephConfig struct {
@@ -153,11 +155,27 @@ func (cm *ConnectionManager) connect() error {
 		slog.Warn("using default max write size", "default", maxWriteSize)
 	}
 
+	poolRequiresAlignment := false
+	poolAlignment := uint64(1)
+	ioctx, err := conn.OpenIOContext(cm.config.PoolName)
+	if err == nil {
+		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
+			poolRequiresAlignment = true
+			if align, err := ioctx.Alignment(); err == nil && align > 1 {
+				poolAlignment = align
+				slog.Debug("pool requires alignment", "alignment", align)
+			}
+		}
+		ioctx.Destroy()
+	}
+
 	cm.mu.Lock()
 	oldConn := cm.conn
 	cm.conn = conn
 	cm.maxObjectSize = maxSize
 	cm.maxWriteSize = maxWriteSize
+	cm.poolRequiresAlignment = poolRequiresAlignment
+	cm.poolAlignment = poolAlignment
 	cm.mu.Unlock()
 
 	if oldConn != nil {
@@ -253,6 +271,17 @@ func (cm *ConnectionManager) GetMaxWriteSize() (int64, error) {
 	}
 
 	return cm.maxWriteSize, nil
+}
+
+func (cm *ConnectionManager) GetPoolAlignment() (bool, uint64, error) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if cm.conn == nil {
+		return false, 0, errConnectionUnavailable
+	}
+
+	return cm.poolRequiresAlignment, cm.poolAlignment, nil
 }
 
 func (cm *ConnectionManager) markConnectionBroken() {
