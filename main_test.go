@@ -29,7 +29,7 @@ var cephDaemonLogs *LogDemux
 
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
-		"restic-ceph-server": main,
+		"restic-rados-server": main,
 	})
 }
 
@@ -187,7 +187,7 @@ func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 					ts.Logf("tail-server-log: error: %v", err)
 					return
 				}
-				ts.Logf("[restic-ceph-server] %s", strings.TrimRight(line, "\n"))
+				ts.Logf("[restic-rados-server] %s", strings.TrimRight(line, "\n"))
 			}
 		}
 	}()

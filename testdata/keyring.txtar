@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic-ceph-server --keyring $WORK/dummy.keyring --listen $WORK/restic.sock &server&
+exec restic-rados-server --keyring $WORK/dummy.keyring --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
@@ -13,7 +13,7 @@ cmp stdout config-data
 
 kill server
 
-exec restic-ceph-server --id backup --listen $WORK/restic2.sock &server2&
+exec restic-rados-server --id backup --listen $WORK/restic2.sock &server2&
 wait4socket $WORK/restic2.sock
 
 exec curl --silent --unix-socket $WORK/restic2.sock --request POST 'http://localhost/?create=true'
@@ -24,7 +24,7 @@ cmp stdout config-data
 kill server2
 
 env CEPH_KEYRING=$WORK/dummy.keyring
-exec restic-ceph-server --listen $WORK/restic3.sock &server3&
+exec restic-rados-server --listen $WORK/restic3.sock &server3&
 wait4socket $WORK/restic3.sock
 
 exec curl --silent --unix-socket $WORK/restic3.sock --request GET http://localhost/config
@@ -34,7 +34,7 @@ kill server3
 
 env CEPH_ID=backup2
 env CEPH_KEYRING=
-exec restic-ceph-server --listen $WORK/restic4.sock &server4&
+exec restic-rados-server --listen $WORK/restic4.sock &server4&
 wait4socket $WORK/restic4.sock
 
 exec curl --silent --unix-socket $WORK/restic4.sock --request GET http://localhost/config

@@ -1,14 +1,14 @@
 tail-logs
 create-pool
 
-exec restic init --json --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
+exec restic init --json --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
 stdin stdout
 exec jq '{message_type: .message_type, id: .id}'
 stdin stdout
 scrubhex stdout stdout
 cmp stdout out.json
 
-exec restic cat config --option rclone.program=restic-ceph-server --repo rclone: --password-file $WORK/password.txt
+exec restic cat config --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
 cp stdout restic-cat-config-stdout
 
 scrubhex restic-cat-config-stdout stdout

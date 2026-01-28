@@ -26,13 +26,13 @@ if [ -z "$CONTAINER_RUNTIME" ]; then
 fi
 
 # Optional: Create go cache volume with correct permissions
-# $ docker volume create restic-ceph-server-go-cache
-# $ docker run --rm -v restic-ceph-server-go-cache:/go --user root alpine chown -R 1000:1000 /go
+# $ docker volume create restic-rados-server-go-cache
+# $ docker run --rm -v restic-rados-server-go-cache:/go --user root alpine chown -R 1000:1000 /go
 GO_CACHE_ARGS=()
-if $CONTAINER_RUNTIME volume inspect restic-ceph-server-go-cache >/dev/null 2>&1; then
-	GO_CACHE_ARGS=(--volume "restic-ceph-server-go-cache:/go:z" --env GOCACHE=/go/cache --env GOMODCACHE=/go/pkg/mod)
+if $CONTAINER_RUNTIME volume inspect restic-rados-server-go-cache >/dev/null 2>&1; then
+	GO_CACHE_ARGS=(--volume "restic-rados-server-go-cache:/go:z" --env GOCACHE=/go/cache --env GOMODCACHE=/go/pkg/mod)
 fi
 
 set -o xtrace
-$CONTAINER_RUNTIME build --file .devcontainer/Dockerfile --build-arg "CEPH_RELEASE=${CEPH_RELEASE}" --tag "restic-ceph-server:${CEPH_RELEASE}" .
-$CONTAINER_RUNTIME run --rm --name restic-ceph-server --volume "$PWD:/workspace:z" "${GO_CACHE_ARGS[@]}" "restic-ceph-server:${CEPH_RELEASE}" go test "$@"
+$CONTAINER_RUNTIME build --file .devcontainer/Dockerfile --build-arg "CEPH_RELEASE=${CEPH_RELEASE}" --tag "restic-rados-server:${CEPH_RELEASE}" .
+$CONTAINER_RUNTIME run --rm --name restic-rados-server --volume "$PWD:/workspace:z" "${GO_CACHE_ARGS[@]}" "restic-rados-server:${CEPH_RELEASE}" go test "$@"
