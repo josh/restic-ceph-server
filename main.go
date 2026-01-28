@@ -243,6 +243,18 @@ func main() {
 			"cluster_max_write_size", maxWriteSize)
 	}
 
+	requiresAlign, alignment, err := connMgr.GetPoolAlignment()
+	if err != nil {
+		slog.Warn("failed to get pool alignment for validation", "error", err)
+	} else if requiresAlign && alignment > 1 {
+		if config.WriteBufferSize%int64(alignment) != 0 {
+			slog.Error("write buffer size must be a multiple of pool alignment",
+				"write_buffer_size", config.WriteBufferSize,
+				"pool_alignment", alignment)
+			os.Exit(1)
+		}
+	}
+
 	h := &Handler{
 		connMgr:         connMgr,
 		appendOnly:      config.AppendOnly,

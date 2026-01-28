@@ -27,6 +27,7 @@ type Handler struct {
 }
 
 type HandlerContext struct {
+	ioctx         *rados.IOContext
 	radosIO       RadosIOContext
 	striperIO     RadosIOContext
 	maxObjectSize int64
@@ -34,10 +35,7 @@ type HandlerContext struct {
 }
 
 func (hctx *HandlerContext) Destroy() {
-	if hctx.striperIO != nil {
-		hctx.striperIO.Destroy()
-	}
-	hctx.radosIO.Destroy()
+	hctx.ioctx.Destroy()
 }
 
 type responseWriter struct {
@@ -90,6 +88,7 @@ func (h *Handler) openIOContext(ctx context.Context) (*HandlerContext, error) {
 	}
 
 	hctx := &HandlerContext{
+		ioctx:         ioctx,
 		maxObjectSize: maxSize,
 	}
 
@@ -358,7 +357,9 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		hctx.Destroy()
 	}()
 
-	iter, err := hctx.radosIO.Iter()
+	slog.Debug("rados.Iter")
+	hctx.radosCalls++
+	iter, err := hctx.ioctx.Iter()
 	if err != nil {
 		slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("create iterator: %w", err))
 		http.Error(rw, "internal server error", http.StatusInternalServerError)
@@ -752,9 +753,20 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 		return nil
 	}
 
-	reader := NewRadosObjectReader(rioctx, object, rng.start, contentLength)
-	if _, err = reader.WriteTo(w); err != nil {
+	_, sum, err := rioctx.ReadObject(object, rng.start, contentLength, w)
+	if err != nil {
 		return fmt.Errorf("read %s: %w", object, err)
+	}
+
+	if rng.start == 0 && contentLength == int64(stat.Size) {
+		hashID := object[strings.LastIndex(object, "/")+1:]
+		expected, parseErr := parseExpectedHash(hashID)
+		if parseErr == nil && expected != [32]byte{} && sum != expected {
+			slog.Warn("hash mismatch on read",
+				"object", object,
+				"expected", hex.EncodeToString(expected[:]),
+				"actual", hex.EncodeToString(sum[:]))
+		}
 	}
 
 	return nil
@@ -784,11 +796,8 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 		rioctx = hctx.radosIO
 	}
 
-	writer, err := NewRadosObjectWriter(rioctx, object)
+	_, sum, err := rioctx.WriteObject(object, r.Body)
 	if err != nil {
-		return fmt.Errorf("create writer for %s: %w", object, err)
-	}
-	if _, err := writer.ReadFrom(r.Body); err != nil {
 		_ = rioctx.Remove(object)
 		if errors.Is(err, context.Canceled) {
 			return errClientAborted
@@ -798,13 +807,10 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 
 	slog.Debug("created blob", "object", object, "size", size, "striped", useStriper)
 
-	if expected != [32]byte{} {
-		actual := writer.Sum()
-		if actual != expected {
-			slog.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", actual))
-			_ = rioctx.Remove(object)
-			return errHashMismatch
-		}
+	if expected != [32]byte{} && sum != expected {
+		slog.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", sum))
+		_ = rioctx.Remove(object)
+		return errHashMismatch
 	}
 
 	w.WriteHeader(http.StatusOK)
