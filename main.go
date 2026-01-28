@@ -18,6 +18,8 @@ import (
 
 var logger *slog.Logger
 
+var version = "0.0.0"
+
 var (
 	errObjectNotFound       = errors.New("object not found")
 	errObjectExists         = errors.New("object exists")
@@ -97,6 +99,7 @@ type Config struct {
 }
 
 func parseConfig() (Config, error) {
+	var showVersion bool
 	var verbose bool
 	var listeners listenerFlags
 	var useStdio bool
@@ -113,6 +116,7 @@ func parseConfig() (Config, error) {
 	var writeBufferSize int64
 	var maxObjectSize int64
 
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&verbose, "v", false, "enable verbose logging")
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	flag.Var(&listeners, "listen", "Address or Unix socket path to listen on, repeatable")
@@ -130,6 +134,11 @@ func parseConfig() (Config, error) {
 	flag.Int64Var(&writeBufferSize, "write-buffer-size", defaultWriteBufferSize, "buffer size for writing objects in bytes")
 	flag.Int64Var(&maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	if !verbose {
 		verbose = parseBoolEnv("CEPH_SERVER_VERBOSE")
