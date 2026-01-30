@@ -1,0 +1,5 @@
+create-pool meta
+create-pool data
+
+! exec restic-rados-server --pool=$CEPH_POOL_DATA:* --pool=$CEPH_POOL_META:* --listen $WORK/restic.sock
+stderr 'multiple catch-all pools specified'

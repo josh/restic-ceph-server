@@ -76,8 +76,8 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 	)
 }
 
-func (h *Handler) openIOContext(ctx context.Context) (*HandlerContext, error) {
-	ioctx, err := h.connMgr.GetIOContext()
+func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
+	ioctx, err := h.connMgr.GetIOContextForType(blobType)
 	if err != nil {
 		return nil, err
 	}
@@ -116,8 +116,8 @@ func (h *Handler) openIOContext(ctx context.Context) (*HandlerContext, error) {
 	return hctx, nil
 }
 
-func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request) (*HandlerContext, bool) {
-	hctx, err := h.openIOContext(r.Context())
+func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request, blobType BlobType) (*HandlerContext, bool) {
+	hctx, err := h.openIOContext(r.Context(), blobType)
 	if err != nil {
 		switch {
 		case errors.Is(err, errConnectionUnavailable):
@@ -206,7 +206,7 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
-	hctx, ok := h.openHTTPIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r, BlobTypeConfig)
 	if !ok {
 		return
 	}
@@ -229,7 +229,7 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
-	hctx, ok := h.openHTTPIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r, BlobTypeConfig)
 	if !ok {
 		return
 	}
@@ -258,7 +258,7 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openHTTPIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r, BlobTypeConfig)
 	if !ok {
 		return
 	}
@@ -304,11 +304,13 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = conn.GetPoolByName(h.connMgr.config.PoolName)
-	if err != nil {
-		slog.Warn("pool check failed", "pool", h.connMgr.config.PoolName, "error", err)
-		http.NotFound(rw, r)
-		return
+	for _, poolName := range h.connMgr.config.PoolMapping.Pools() {
+		_, err = conn.GetPoolByName(poolName)
+		if err != nil {
+			slog.Warn("pool check failed", "pool", poolName, "error", err)
+			http.NotFound(rw, r)
+			return
+		}
 	}
 
 	createParam := r.URL.Query().Get("create")
@@ -321,7 +323,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openHTTPIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r, BlobTypeConfig)
 	if !ok {
 		return
 	}
@@ -348,7 +350,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openHTTPIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r, BlobType(blobType))
 	if !ok {
 		return
 	}
@@ -464,7 +466,7 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openHTTPIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r, BlobType(blobType))
 	if !ok {
 		return
 	}
@@ -501,7 +503,7 @@ func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openHTTPIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r, BlobType(blobType))
 	if !ok {
 		return
 	}
@@ -544,7 +546,7 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openHTTPIOContext(rw, r)
+	hctx, ok := h.openHTTPIOContext(rw, r, BlobType(blobType))
 	if !ok {
 		return
 	}

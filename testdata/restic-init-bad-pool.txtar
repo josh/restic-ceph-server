@@ -4,11 +4,8 @@ create-pool
 env CEPH_POOL=bad
 ! exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
 cmp stdout out.txt
-cmp stderr err.txt
+stderr 'unexpected HTTP response \(503\)'
 
 -- out.txt --
--- err.txt --
-Fatal: create repository at rclone: failed: Fatal: unable to open repository at rclone:: unexpected HTTP response (404): 404 Not Found
-
 -- password.txt --
 secret

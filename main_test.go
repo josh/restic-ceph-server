@@ -855,16 +855,23 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("unsupported: ! create-pool")
 	}
 
-	if len(args) > 1 {
-		ts.Fatalf("usage: create-pool [replicated|erasure]")
+	var poolEnvName string
+	var poolTypeArg string
+
+	for _, arg := range args {
+		if arg == "replicated" || arg == "erasure" {
+			poolTypeArg = arg
+		} else {
+			poolEnvName = arg
+		}
 	}
 
 	poolType := ts.Getenv("DEFAULT_POOL_TYPE")
 	if poolType == "" {
 		poolType = "replicated"
 	}
-	if len(args) == 1 {
-		poolType = args[0]
+	if poolTypeArg != "" {
+		poolType = poolTypeArg
 	}
 	if poolType != "replicated" && poolType != "erasure" {
 		ts.Fatalf("pool type must be 'replicated' or 'erasure', got: %s", poolType)
@@ -875,12 +882,12 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("CEPH_CONF not set")
 	}
 
-	bytes := make([]byte, 4)
-	_, err := rand.Read(bytes)
+	randBytes := make([]byte, 4)
+	_, err := rand.Read(randBytes)
 	if err != nil {
 		ts.Fatalf("failed to generate pool name: %v", err)
 	}
-	poolName := "test-" + hex.EncodeToString(bytes)
+	poolName := "test-" + hex.EncodeToString(randBytes)
 
 	const maxAttempts = 3
 	var lastCreateErr error
@@ -940,7 +947,12 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 		}
 	}
 
-	ts.Setenv("CEPH_POOL", poolName)
+	if poolEnvName == "" {
+		ts.Setenv("CEPH_POOL", poolName)
+	} else {
+		envVarName := "CEPH_POOL_" + strings.ToUpper(poolEnvName)
+		ts.Setenv(envVarName, poolName)
+	}
 	ts.Setenv("CEPH_POOL_TYPE", poolType)
 
 	ts.Defer(func() {
