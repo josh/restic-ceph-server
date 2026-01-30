@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install --yes \
     curl \
     jq \
     librados-dev \
-    libradosstriper-dev \
     systemd
 
 ARG GO_VERSION=1.25.5
