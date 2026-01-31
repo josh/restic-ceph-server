@@ -19,7 +19,7 @@ import (
 
 var logger *slog.Logger
 
-var version = "0.1.1"
+var version = "0.2.0"
 
 var (
 	errObjectNotFound       = errors.New("object not found")
