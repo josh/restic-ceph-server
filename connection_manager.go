@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,21 +16,20 @@ import (
 var errConnectionUnavailable = errors.New("ceph connection unavailable")
 
 type ConnectionManager struct {
-	mu                    sync.RWMutex
-	conn                  *rados.Conn
-	config                CephConfig
-	reconnecting          bool
-	lastReconnectTime     time.Time
-	minReconnectDelay     time.Duration
-	maxReconnectDelay     time.Duration
-	maxObjectSize         int64
-	maxWriteSize          int64
-	poolRequiresAlignment bool
-	poolAlignment         uint64
+	mu                sync.RWMutex
+	conn              *rados.Conn
+	config            CephConfig
+	reconnecting      bool
+	lastReconnectTime time.Time
+	minReconnectDelay time.Duration
+	maxReconnectDelay time.Duration
+	maxObjectSize     int64
+	maxWriteSize      int64
+	poolProperties    map[string]*PoolProperties
 }
 
 type CephConfig struct {
-	PoolName      string
+	PoolMapping   *PoolMapping
 	KeyringPath   string
 	ClientID      string
 	CephConf      string
@@ -155,17 +155,27 @@ func (cm *ConnectionManager) connect() error {
 		slog.Warn("using default max write size", "default", maxWriteSize)
 	}
 
-	poolRequiresAlignment := false
-	poolAlignment := uint64(1)
-	ioctx, err := conn.OpenIOContext(cm.config.PoolName)
-	if err == nil {
+	poolProps := make(map[string]*PoolProperties)
+	for _, poolName := range cm.config.PoolMapping.Pools() {
+		ioctx, err := conn.OpenIOContext(poolName)
+		if err != nil {
+			return fmt.Errorf("failed to open pool %q: %w", poolName, err)
+		}
+
+		props := &PoolProperties{
+			RequiresAlignment: false,
+			Alignment:         1,
+		}
+
 		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
-			poolRequiresAlignment = true
+			props.RequiresAlignment = true
 			if align, err := ioctx.Alignment(); err == nil && align > 1 {
-				poolAlignment = align
-				slog.Debug("pool requires alignment", "alignment", align)
+				props.Alignment = align
+				slog.Debug("pool requires alignment", "pool", poolName, "alignment", align)
 			}
 		}
+
+		poolProps[poolName] = props
 		ioctx.Destroy()
 	}
 
@@ -174,8 +184,7 @@ func (cm *ConnectionManager) connect() error {
 	cm.conn = conn
 	cm.maxObjectSize = maxSize
 	cm.maxWriteSize = maxWriteSize
-	cm.poolRequiresAlignment = poolRequiresAlignment
-	cm.poolAlignment = poolAlignment
+	cm.poolProperties = poolProps
 	cm.mu.Unlock()
 
 	if oldConn != nil {
@@ -185,7 +194,7 @@ func (cm *ConnectionManager) connect() error {
 	return nil
 }
 
-func (cm *ConnectionManager) GetIOContext() (*rados.IOContext, error) {
+func (cm *ConnectionManager) GetIOContextForPool(poolName string) (*rados.IOContext, error) {
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		cm.mu.RLock()
@@ -206,13 +215,13 @@ func (cm *ConnectionManager) GetIOContext() (*rados.IOContext, error) {
 			}
 		}
 
-		ioctx, err := conn.OpenIOContext(cm.config.PoolName)
+		ioctx, err := conn.OpenIOContext(poolName)
 		if err != nil {
 			if errors.Is(err, rados.ErrNotFound) {
 				return nil, err
 			}
 
-			slog.Error("failed to open IO context", "error", err, "attempt", attempt+1)
+			slog.Error("failed to open IO context", "pool", poolName, "error", err, "attempt", attempt+1)
 			cm.markConnectionBroken()
 			if attempt < maxAttempts-1 {
 				if err := cm.tryReconnect(); err != nil {
@@ -227,6 +236,11 @@ func (cm *ConnectionManager) GetIOContext() (*rados.IOContext, error) {
 	}
 
 	return nil, errConnectionUnavailable
+}
+
+func (cm *ConnectionManager) GetIOContextForType(blobType BlobType) (*rados.IOContext, error) {
+	poolName := cm.config.PoolMapping.GetPoolForType(blobType)
+	return cm.GetIOContextForPool(poolName)
 }
 
 func (cm *ConnectionManager) GetConnection() (*rados.Conn, error) {
@@ -273,7 +287,7 @@ func (cm *ConnectionManager) GetMaxWriteSize() (int64, error) {
 	return cm.maxWriteSize, nil
 }
 
-func (cm *ConnectionManager) GetPoolAlignment() (bool, uint64, error) {
+func (cm *ConnectionManager) GetPoolAlignment(poolName string) (bool, uint64, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
@@ -281,7 +295,38 @@ func (cm *ConnectionManager) GetPoolAlignment() (bool, uint64, error) {
 		return false, 0, errConnectionUnavailable
 	}
 
-	return cm.poolRequiresAlignment, cm.poolAlignment, nil
+	props, ok := cm.poolProperties[poolName]
+	if !ok {
+		return false, 0, fmt.Errorf("pool %q not configured", poolName)
+	}
+
+	return props.RequiresAlignment, props.Alignment, nil
+}
+
+func (cm *ConnectionManager) ValidateBufferAlignment(bufferSize int64) error {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	if cm.conn == nil {
+		return errConnectionUnavailable
+	}
+
+	var misaligned []string
+	for _, poolName := range cm.config.PoolMapping.Pools() {
+		props := cm.poolProperties[poolName]
+		if props.RequiresAlignment && props.Alignment > 1 {
+			if bufferSize%int64(props.Alignment) != 0 {
+				misaligned = append(misaligned, fmt.Sprintf("%s (requires %d)", poolName, props.Alignment))
+			}
+		}
+	}
+
+	if len(misaligned) > 0 {
+		return fmt.Errorf("buffer size %d not aligned for pools: %s",
+			bufferSize, strings.Join(misaligned, ", "))
+	}
+
+	return nil
 }
 
 func (cm *ConnectionManager) markConnectionBroken() {

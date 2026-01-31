@@ -1,0 +1,30 @@
+tail-logs
+create-pool meta
+create-pool data
+
+env CEPH_POOL=$CEPH_POOL_DATA:data;$CEPH_POOL_META:*
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
+
+exec restic backup data-original --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
+
+exec rados --pool $CEPH_POOL_META ls
+stdout '^config$'
+stdout '^keys/'
+stdout '^snapshots/'
+stdout '^index/'
+
+exec rados --pool $CEPH_POOL_DATA ls
+stdout '^data/'
+
+exec restic restore latest --target $WORK/data-restored --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
+
+cmp $WORK/data-restored/data-original/foo.txt data-original/foo.txt
+cmp $WORK/data-restored/data-original/subdir/bar.txt data-original/subdir/bar.txt
+
+-- password.txt --
+secret
+-- data-original/foo.txt --
+foo
+-- data-original/subdir/bar.txt --
+bar

@@ -18,6 +18,18 @@ stdout '404'
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/invalid_type/abc123' --output /dev/null
 stdout '404'
 
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request GET 'http://localhost/config/' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request GET 'http://localhost/config/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @test-data 'http://localhost/config/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/config/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '404'
+
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request GET 'http://localhost/data/not-a-hex-id' --output /dev/null
 stdout '404'
 

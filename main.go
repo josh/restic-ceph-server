@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -90,12 +91,31 @@ type Config struct {
 	LogFile         string
 	KeyringPath     string
 	ClientID        string
-	PoolName        string
+	PoolSpecs       poolFlags
 	CephConf        string
 	EnableStriper   bool
 	ReadBufferSize  int64
 	WriteBufferSize int64
 	MaxObjectSize   int64
+}
+
+type poolFlags []string
+
+func (p *poolFlags) String() string {
+	if p == nil {
+		return ""
+	}
+	return strings.Join(*p, ";")
+}
+
+func (p *poolFlags) Set(value string) error {
+	for _, spec := range strings.Split(value, ";") {
+		spec = strings.TrimSpace(spec)
+		if spec != "" {
+			*p = append(*p, spec)
+		}
+	}
+	return nil
 }
 
 func parseConfig() (Config, error) {
@@ -109,7 +129,7 @@ func parseConfig() (Config, error) {
 	var logFile string
 	var keyringPath string
 	var clientID string
-	var poolName string
+	var poolSpecs poolFlags
 	var cephConf string
 	var enableStriper bool
 	var readBufferSize int64
@@ -127,7 +147,7 @@ func parseConfig() (Config, error) {
 	flag.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
 	flag.StringVar(&keyringPath, "keyring", "", "path to Ceph keyring file")
 	flag.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
-	flag.StringVar(&poolName, "pool", "", "Ceph pool name")
+	flag.Var(&poolSpecs, "pool", "Pool specification: 'poolname' or 'poolname:types' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
 	flag.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
 	flag.BoolVar(&enableStriper, "enable-striper", false, "use librados striper for large objects")
 	flag.Int64Var(&readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
@@ -164,8 +184,15 @@ func parseConfig() (Config, error) {
 		clientID = os.Getenv("CEPH_ID")
 	}
 
-	if poolName == "" {
-		poolName = os.Getenv("CEPH_POOL")
+	if len(poolSpecs) == 0 {
+		if envPool := os.Getenv("CEPH_POOL"); envPool != "" {
+			for _, spec := range strings.Split(envPool, ";") {
+				spec = strings.TrimSpace(spec)
+				if spec != "" {
+					poolSpecs = append(poolSpecs, spec)
+				}
+			}
+		}
 	}
 
 	if cephConf == "" {
@@ -206,7 +233,7 @@ func parseConfig() (Config, error) {
 		LogFile:         logFile,
 		KeyringPath:     keyringPath,
 		ClientID:        clientID,
-		PoolName:        poolName,
+		PoolSpecs:       poolSpecs,
 		CephConf:        cephConf,
 		EnableStriper:   enableStriper,
 		ReadBufferSize:  readBufferSize,
@@ -227,13 +254,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	if config.PoolName == "" {
-		slog.Error("Ceph pool name not set (use --pool or CEPH_POOL)")
+	if len(config.PoolSpecs) == 0 {
+		fmt.Fprintln(os.Stderr, "Ceph pool not set (use --pool or CEPH_POOL)")
+		os.Exit(1)
+	}
+
+	poolMapping, err := ParsePoolMapping(config.PoolSpecs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid pool configuration: %v\n", err)
 		os.Exit(1)
 	}
 
 	cephConfig := CephConfig{
-		PoolName:      config.PoolName,
+		PoolMapping:   poolMapping,
 		KeyringPath:   config.KeyringPath,
 		ClientID:      config.ClientID,
 		CephConf:      config.CephConf,
@@ -252,14 +285,11 @@ func main() {
 			"cluster_max_write_size", maxWriteSize)
 	}
 
-	requiresAlign, alignment, err := connMgr.GetPoolAlignment()
-	if err != nil {
-		slog.Warn("failed to get pool alignment for validation", "error", err)
-	} else if requiresAlign && alignment > 1 {
-		if config.WriteBufferSize%int64(alignment) != 0 {
-			slog.Error("write buffer size must be a multiple of pool alignment",
-				"write_buffer_size", config.WriteBufferSize,
-				"pool_alignment", alignment)
+	if err := connMgr.ValidateBufferAlignment(config.WriteBufferSize); err != nil {
+		if errors.Is(err, errConnectionUnavailable) {
+			slog.Warn("failed to validate buffer alignment", "error", err)
+		} else {
+			slog.Error("invalid write buffer size", "error", err)
 			os.Exit(1)
 		}
 	}
