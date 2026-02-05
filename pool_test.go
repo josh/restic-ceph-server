@@ -4,11 +4,11 @@ import (
 	"testing"
 )
 
-func TestParsePoolMapping(t *testing.T) {
+func TestParsePoolsFromCLI(t *testing.T) {
 	tests := []struct {
 		name    string
 		specs   []string
-		want    map[BlobType]string
+		want    ServerConfigPools
 		wantErr string
 	}{
 		{
@@ -19,61 +19,61 @@ func TestParsePoolMapping(t *testing.T) {
 		{
 			name:  "single catch-all pool",
 			specs: []string{"mypool"},
-			want: map[BlobType]string{
-				BlobTypeConfig:    "mypool",
-				BlobTypeKeys:      "mypool",
-				BlobTypeLocks:     "mypool",
-				BlobTypeSnapshots: "mypool",
-				BlobTypeData:      "mypool",
-				BlobTypeIndex:     "mypool",
+			want: ServerConfigPools{
+				Config:    "mypool",
+				Keys:      "mypool",
+				Locks:     "mypool",
+				Snapshots: "mypool",
+				Data:      "mypool",
+				Index:     "mypool",
 			},
 		},
 		{
 			name:  "explicit catch-all with wildcard",
 			specs: []string{"mypool:*"},
-			want: map[BlobType]string{
-				BlobTypeConfig:    "mypool",
-				BlobTypeKeys:      "mypool",
-				BlobTypeLocks:     "mypool",
-				BlobTypeSnapshots: "mypool",
-				BlobTypeData:      "mypool",
-				BlobTypeIndex:     "mypool",
+			want: ServerConfigPools{
+				Config:    "mypool",
+				Keys:      "mypool",
+				Locks:     "mypool",
+				Snapshots: "mypool",
+				Data:      "mypool",
+				Index:     "mypool",
 			},
 		},
 		{
 			name:  "pool with specific types",
 			specs: []string{"restic_data:data,index", "restic_metadata:*"},
-			want: map[BlobType]string{
-				BlobTypeConfig:    "restic_metadata",
-				BlobTypeKeys:      "restic_metadata",
-				BlobTypeLocks:     "restic_metadata",
-				BlobTypeSnapshots: "restic_metadata",
-				BlobTypeData:      "restic_data",
-				BlobTypeIndex:     "restic_data",
+			want: ServerConfigPools{
+				Config:    "restic_metadata",
+				Keys:      "restic_metadata",
+				Locks:     "restic_metadata",
+				Snapshots: "restic_metadata",
+				Data:      "restic_data",
+				Index:     "restic_data",
 			},
 		},
 		{
 			name:  "multiple pools with catch-all for remainder",
 			specs: []string{"restic_data:data", "indexpool:index", "restic_metadata:*"},
-			want: map[BlobType]string{
-				BlobTypeConfig:    "restic_metadata",
-				BlobTypeKeys:      "restic_metadata",
-				BlobTypeLocks:     "restic_metadata",
-				BlobTypeSnapshots: "restic_metadata",
-				BlobTypeData:      "restic_data",
-				BlobTypeIndex:     "indexpool",
+			want: ServerConfigPools{
+				Config:    "restic_metadata",
+				Keys:      "restic_metadata",
+				Locks:     "restic_metadata",
+				Snapshots: "restic_metadata",
+				Data:      "restic_data",
+				Index:     "indexpool",
 			},
 		},
 		{
 			name:  "all types explicitly assigned",
 			specs: []string{"pool1:config,keys,locks", "pool2:snapshots,data,index"},
-			want: map[BlobType]string{
-				BlobTypeConfig:    "pool1",
-				BlobTypeKeys:      "pool1",
-				BlobTypeLocks:     "pool1",
-				BlobTypeSnapshots: "pool2",
-				BlobTypeData:      "pool2",
-				BlobTypeIndex:     "pool2",
+			want: ServerConfigPools{
+				Config:    "pool1",
+				Keys:      "pool1",
+				Locks:     "pool1",
+				Snapshots: "pool2",
+				Data:      "pool2",
+				Index:     "pool2",
 			},
 		},
 		{
@@ -102,9 +102,11 @@ func TestParsePoolMapping(t *testing.T) {
 			wantErr: `blob type "data" assigned to multiple pools: "pool1" and "pool2"`,
 		},
 		{
-			name:    "error: missing blob types without catch-all",
-			specs:   []string{"restic_data:data"},
-			wantErr: "blob types not assigned to any pool: config, keys, locks, snapshots, index (use '*' as catch-all)",
+			name:  "partial mapping without catch-all (allowed)",
+			specs: []string{"restic_data:data"},
+			want: ServerConfigPools{
+				Data: "restic_data",
+			},
 		},
 		{
 			name:    "error: empty pool specification",
@@ -124,20 +126,20 @@ func TestParsePoolMapping(t *testing.T) {
 		{
 			name:  "whitespace handling",
 			specs: []string{"  restic_data : data , index  ", "restic_metadata:*"},
-			want: map[BlobType]string{
-				BlobTypeConfig:    "restic_metadata",
-				BlobTypeKeys:      "restic_metadata",
-				BlobTypeLocks:     "restic_metadata",
-				BlobTypeSnapshots: "restic_metadata",
-				BlobTypeData:      "restic_data",
-				BlobTypeIndex:     "restic_data",
+			want: ServerConfigPools{
+				Config:    "restic_metadata",
+				Keys:      "restic_metadata",
+				Locks:     "restic_metadata",
+				Snapshots: "restic_metadata",
+				Data:      "restic_data",
+				Index:     "restic_data",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParsePoolMapping(tt.specs)
+			got, err := ParsePoolsFromCLI(tt.specs)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -153,30 +155,36 @@ func TestParsePoolMapping(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			if got == nil {
-				t.Fatal("expected non-nil PoolMapping")
+			if got.Config != tt.want.Config {
+				t.Errorf("Config = %q, want %q", got.Config, tt.want.Config)
 			}
-
-			for blobType, wantPool := range tt.want {
-				gotPool := got.GetPoolForType(blobType)
-				if gotPool != wantPool {
-					t.Errorf("GetPoolForType(%q) = %q, want %q", blobType, gotPool, wantPool)
-				}
+			if got.Keys != tt.want.Keys {
+				t.Errorf("Keys = %q, want %q", got.Keys, tt.want.Keys)
 			}
-
-			for _, blobType := range AllBlobTypes {
-				if _, ok := tt.want[blobType]; !ok {
-					t.Errorf("test case missing expected mapping for blob type %q", blobType)
-				}
+			if got.Locks != tt.want.Locks {
+				t.Errorf("Locks = %q, want %q", got.Locks, tt.want.Locks)
+			}
+			if got.Snapshots != tt.want.Snapshots {
+				t.Errorf("Snapshots = %q, want %q", got.Snapshots, tt.want.Snapshots)
+			}
+			if got.Data != tt.want.Data {
+				t.Errorf("Data = %q, want %q", got.Data, tt.want.Data)
+			}
+			if got.Index != tt.want.Index {
+				t.Errorf("Index = %q, want %q", got.Index, tt.want.Index)
 			}
 		})
 	}
 }
 
-func TestPoolMapping_GetPoolForType(t *testing.T) {
-	pm, err := ParsePoolMapping([]string{"restic_data:data,index", "restic_metadata:*"})
-	if err != nil {
-		t.Fatalf("ParsePoolMapping failed: %v", err)
+func TestServerConfigPools_GetPoolForType(t *testing.T) {
+	pools := ServerConfigPools{
+		Config:    "restic_metadata",
+		Keys:      "restic_metadata",
+		Locks:     "restic_metadata",
+		Snapshots: "restic_metadata",
+		Data:      "restic_data",
+		Index:     "restic_data",
 	}
 
 	tests := []struct {
@@ -189,11 +197,12 @@ func TestPoolMapping_GetPoolForType(t *testing.T) {
 		{BlobTypeSnapshots, "restic_metadata"},
 		{BlobTypeData, "restic_data"},
 		{BlobTypeIndex, "restic_data"},
+		{BlobType("invalid"), ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.blobType), func(t *testing.T) {
-			got := pm.GetPoolForType(tt.blobType)
+			got := pools.GetPoolForType(tt.blobType)
 			if got != tt.want {
 				t.Errorf("GetPoolForType(%q) = %q, want %q", tt.blobType, got, tt.want)
 			}
@@ -201,44 +210,113 @@ func TestPoolMapping_GetPoolForType(t *testing.T) {
 	}
 }
 
-func TestPoolMapping_Pools(t *testing.T) {
+func TestServerConfigPools_IsComplete(t *testing.T) {
 	tests := []struct {
-		name  string
-		specs []string
-		want  []string
+		name         string
+		pools        ServerConfigPools
+		wantComplete bool
 	}{
 		{
-			name:  "single pool",
-			specs: []string{"mypool"},
-			want:  []string{"mypool"},
+			name: "complete",
+			pools: ServerConfigPools{
+				Config:    "pool1",
+				Keys:      "pool1",
+				Locks:     "pool1",
+				Snapshots: "pool1",
+				Data:      "pool1",
+				Index:     "pool1",
+			},
+			wantComplete: true,
 		},
 		{
-			name:  "two pools sorted",
-			specs: []string{"zpool:data", "apool:*"},
-			want:  []string{"apool", "zpool"},
+			name: "incomplete - missing data",
+			pools: ServerConfigPools{
+				Config:    "pool1",
+				Keys:      "pool1",
+				Locks:     "pool1",
+				Snapshots: "pool1",
+				Index:     "pool1",
+			},
+			wantComplete: false,
 		},
 		{
-			name:  "multiple pools sorted",
-			specs: []string{"restic_data:data", "indexpool:index", "restic_metadata:*"},
-			want:  []string{"indexpool", "restic_data", "restic_metadata"},
+			name:         "incomplete - empty",
+			pools:        ServerConfigPools{},
+			wantComplete: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pm, err := ParsePoolMapping(tt.specs)
-			if err != nil {
-				t.Fatalf("ParsePoolMapping failed: %v", err)
+			if got := tt.pools.IsComplete(); got != tt.wantComplete {
+				t.Errorf("IsComplete() = %v, want %v", got, tt.wantComplete)
 			}
+		})
+	}
+}
 
-			got := pm.Pools()
+func TestServerConfigPools_UniquePools(t *testing.T) {
+	tests := []struct {
+		name  string
+		pools ServerConfigPools
+		want  []string
+	}{
+		{
+			name: "single pool",
+			pools: ServerConfigPools{
+				Config:    "mypool",
+				Keys:      "mypool",
+				Locks:     "mypool",
+				Snapshots: "mypool",
+				Data:      "mypool",
+				Index:     "mypool",
+			},
+			want: []string{"mypool"},
+		},
+		{
+			name: "two pools sorted",
+			pools: ServerConfigPools{
+				Config:    "apool",
+				Keys:      "apool",
+				Locks:     "apool",
+				Snapshots: "apool",
+				Data:      "zpool",
+				Index:     "zpool",
+			},
+			want: []string{"apool", "zpool"},
+		},
+		{
+			name: "multiple pools sorted",
+			pools: ServerConfigPools{
+				Config:    "restic_metadata",
+				Keys:      "restic_metadata",
+				Locks:     "restic_metadata",
+				Snapshots: "restic_metadata",
+				Data:      "restic_data",
+				Index:     "indexpool",
+			},
+			want: []string{"indexpool", "restic_data", "restic_metadata"},
+		},
+		{
+			name: "partial pools",
+			pools: ServerConfigPools{
+				Config: "configpool",
+				Data:   "datapool",
+			},
+			want: []string{"configpool", "datapool"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.pools.UniquePools()
 			if len(got) != len(tt.want) {
-				t.Fatalf("Pools() returned %d pools, want %d", len(got), len(tt.want))
+				t.Fatalf("UniquePools() returned %d pools, want %d", len(got), len(tt.want))
 			}
 
 			for i, want := range tt.want {
 				if got[i] != want {
-					t.Errorf("Pools()[%d] = %q, want %q", i, got[i], want)
+					t.Errorf("UniquePools()[%d] = %q, want %q", i, got[i], want)
 				}
 			}
 		})

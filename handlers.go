@@ -10,6 +10,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,11 +20,12 @@ import (
 )
 
 type Handler struct {
-	connMgr         *ConnectionManager
-	appendOnly      bool
-	striperEnabled  bool
-	readBufferPool  *BufferPool
-	writeBufferPool *BufferPool
+	connMgr               *ConnectionManager
+	initialPools          ServerConfigPools
+	initialStriperEnabled bool
+	appendOnly            bool
+	readBufferPool        *BufferPool
+	writeBufferPool       *BufferPool
 }
 
 type HandlerContext struct {
@@ -49,6 +51,88 @@ type ServerConfig struct {
 	Version        int               `json:"version"`
 	Pools          ServerConfigPools `json:"pools"`
 	StriperEnabled bool              `json:"striper_enabled"`
+}
+
+func (p *ServerConfigPools) GetPoolForType(bt BlobType) string {
+	switch bt {
+	case BlobTypeConfig:
+		return p.Config
+	case BlobTypeKeys:
+		return p.Keys
+	case BlobTypeLocks:
+		return p.Locks
+	case BlobTypeSnapshots:
+		return p.Snapshots
+	case BlobTypeData:
+		return p.Data
+	case BlobTypeIndex:
+		return p.Index
+	default:
+		return ""
+	}
+}
+
+func (p *ServerConfigPools) UniquePools() []string {
+	poolSet := make(map[string]struct{})
+	if p.Config != "" {
+		poolSet[p.Config] = struct{}{}
+	}
+	if p.Keys != "" {
+		poolSet[p.Keys] = struct{}{}
+	}
+	if p.Locks != "" {
+		poolSet[p.Locks] = struct{}{}
+	}
+	if p.Snapshots != "" {
+		poolSet[p.Snapshots] = struct{}{}
+	}
+	if p.Data != "" {
+		poolSet[p.Data] = struct{}{}
+	}
+	if p.Index != "" {
+		poolSet[p.Index] = struct{}{}
+	}
+
+	pools := make([]string, 0, len(poolSet))
+	for pool := range poolSet {
+		pools = append(pools, pool)
+	}
+	slices.Sort(pools)
+	return pools
+}
+
+func (p *ServerConfigPools) IsComplete() bool {
+	return p.Config != "" && p.Keys != "" && p.Locks != "" &&
+		p.Snapshots != "" && p.Data != "" && p.Index != ""
+}
+
+func LoadServerConfig(conn *rados.Conn, poolName string) (*ServerConfig, error) {
+	ioctx, err := conn.OpenIOContext(poolName)
+	if err != nil {
+		return nil, fmt.Errorf("open config pool %q: %w", poolName, err)
+	}
+	defer ioctx.Destroy()
+
+	stat, err := ioctx.Stat(serverConfigObjectName)
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat server-config: %w", err)
+	}
+
+	data := make([]byte, stat.Size)
+	n, err := ioctx.Read(serverConfigObjectName, data, 0)
+	if err != nil {
+		return nil, fmt.Errorf("read server-config: %w", err)
+	}
+
+	var sc ServerConfig
+	if err := json.Unmarshal(data[:n], &sc); err != nil {
+		return nil, fmt.Errorf("parse server-config: %w", err)
+	}
+
+	return &sc, nil
 }
 
 func (hctx *HandlerContext) Destroy() {
@@ -94,7 +178,7 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, err := h.connMgr.GetIOContextForType(blobType)
+	ioctx, poolName, err := h.connMgr.GetIOContextForType(blobType)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +188,6 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		return nil, fmt.Errorf("get max object size: %w", err)
 	}
 
-	poolName := h.connMgr.config.PoolMapping.GetPoolForType(blobType)
 	_, alignment, _ := h.connMgr.GetPoolAlignment(poolName)
 
 	hctx := &HandlerContext{
@@ -120,7 +203,8 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		alignment:   alignment,
 	}
 
-	if h.striperEnabled {
+	striperEnabled, _ := h.connMgr.GetStriperEnabled()
+	if striperEnabled {
 		maxObjectSize, err := h.connMgr.GetMaxObjectSize()
 		if err != nil {
 			return nil, fmt.Errorf("get max object size: %w", err)
@@ -144,6 +228,8 @@ func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request, blob
 		switch {
 		case errors.Is(err, errConnectionUnavailable):
 			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		case errors.Is(err, errPoolNotConfigured), errors.Is(err, errRepoNotInitialized):
+			http.Error(w, "repository not initialized", http.StatusServiceUnavailable)
 		case errors.Is(err, rados.ErrNotFound):
 			http.NotFound(w, r)
 		default:
@@ -270,18 +356,10 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pm := h.connMgr.config.PoolMapping
 	sc := ServerConfig{
-		Version: 1,
-		Pools: ServerConfigPools{
-			Config:    pm.GetPoolForType(BlobTypeConfig),
-			Keys:      pm.GetPoolForType(BlobTypeKeys),
-			Locks:     pm.GetPoolForType(BlobTypeLocks),
-			Snapshots: pm.GetPoolForType(BlobTypeSnapshots),
-			Data:      pm.GetPoolForType(BlobTypeData),
-			Index:     pm.GetPoolForType(BlobTypeIndex),
-		},
-		StriperEnabled: h.striperEnabled,
+		Version:        1,
+		Pools:          h.initialPools,
+		StriperEnabled: h.initialStriperEnabled,
 	}
 
 	data, err := json.Marshal(sc)
@@ -301,6 +379,8 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("created server-config", "version", sc.Version, "striper_enabled", sc.StriperEnabled)
+
+	h.connMgr.InvalidateServerConfig()
 
 	if err := hctx.createRadosObject(rw, r, "config", "config", false); err != nil {
 		h.handleRadosError(rw, r, "config", err)
@@ -373,7 +453,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, poolName := range h.connMgr.config.PoolMapping.Pools() {
+	for _, poolName := range h.initialPools.UniquePools() {
 		_, err = conn.GetPoolByName(poolName)
 		if err != nil {
 			slog.Warn("pool check failed", "pool", poolName, "error", err)

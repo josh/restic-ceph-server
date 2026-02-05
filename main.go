@@ -259,18 +259,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	poolMapping, err := ParsePoolMapping(config.PoolSpecs)
+	cliPools, err := ParsePoolsFromCLI(config.PoolSpecs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid pool configuration: %v\n", err)
 		os.Exit(1)
 	}
 
+	if cliPools.Config == "" {
+		fmt.Fprintln(os.Stderr, "config pool must be specified (use 'poolname' or 'poolname:config,...')")
+		os.Exit(1)
+	}
+
 	cephConfig := CephConfig{
-		PoolMapping:   poolMapping,
-		KeyringPath:   config.KeyringPath,
-		ClientID:      config.ClientID,
-		CephConf:      config.CephConf,
-		MaxObjectSize: config.MaxObjectSize,
+		ConfigPoolName: cliPools.Config,
+		KeyringPath:    config.KeyringPath,
+		ClientID:       config.ClientID,
+		CephConf:       config.CephConf,
+		MaxObjectSize:  config.MaxObjectSize,
 	}
 
 	connMgr := NewConnectionManager(cephConfig)
@@ -286,11 +291,12 @@ func main() {
 	}
 
 	h := &Handler{
-		connMgr:         connMgr,
-		appendOnly:      config.AppendOnly,
-		striperEnabled:  config.EnableStriper,
-		readBufferPool:  NewBufferPool(config.ReadBufferSize),
-		writeBufferPool: NewBufferPool(config.WriteBufferSize),
+		connMgr:               connMgr,
+		initialPools:          cliPools,
+		initialStriperEnabled: config.EnableStriper,
+		appendOnly:            config.AppendOnly,
+		readBufferPool:        NewBufferPool(config.ReadBufferSize),
+		writeBufferPool:       NewBufferPool(config.WriteBufferSize),
 	}
 
 	mux := http.NewServeMux()

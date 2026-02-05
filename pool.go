@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 )
 
@@ -23,39 +22,28 @@ var AllBlobTypes = []BlobType{
 	BlobTypeSnapshots, BlobTypeData, BlobTypeIndex,
 }
 
-type PoolMapping struct {
-	typeToPool map[BlobType]string
-	pools      []string
+type PoolProperties struct {
+	RequiresAlignment bool
+	Alignment         uint64
 }
 
-func (pm *PoolMapping) GetPoolForType(blobType BlobType) string {
-	return pm.typeToPool[blobType]
-}
-
-func (pm *PoolMapping) Pools() []string {
-	return pm.pools
-}
-
-func ParsePoolMapping(specs []string) (*PoolMapping, error) {
+func ParsePoolsFromCLI(specs []string) (ServerConfigPools, error) {
 	if len(specs) == 0 {
-		return nil, errors.New("no pool specifications provided")
+		return ServerConfigPools{}, errors.New("no pool specifications provided")
 	}
 
 	typeToPool := make(map[BlobType]string)
 	var catchAllPool string
-	poolSet := make(map[string]struct{})
 
 	for _, spec := range specs {
 		poolName, types, err := parsePoolSpec(spec)
 		if err != nil {
-			return nil, err
+			return ServerConfigPools{}, err
 		}
-
-		poolSet[poolName] = struct{}{}
 
 		if len(types) == 0 || (len(types) == 1 && types[0] == "*") {
 			if catchAllPool != "" {
-				return nil, fmt.Errorf("multiple catch-all pools specified: %q and %q", catchAllPool, poolName)
+				return ServerConfigPools{}, fmt.Errorf("multiple catch-all pools specified: %q and %q", catchAllPool, poolName)
 			}
 			catchAllPool = poolName
 			continue
@@ -63,43 +51,32 @@ func ParsePoolMapping(specs []string) (*PoolMapping, error) {
 
 		for _, t := range types {
 			if t == "*" {
-				return nil, fmt.Errorf("pool %q: wildcard '*' cannot be mixed with explicit types", poolName)
+				return ServerConfigPools{}, fmt.Errorf("pool %q: wildcard '*' cannot be mixed with explicit types", poolName)
 			}
 			blobType := BlobType(t)
 			if !isValidBlobTypeForMapping(blobType) {
-				return nil, fmt.Errorf("pool %q: unknown blob type %q", poolName, t)
+				return ServerConfigPools{}, fmt.Errorf("pool %q: unknown blob type %q", poolName, t)
 			}
 			if existing, ok := typeToPool[blobType]; ok {
-				return nil, fmt.Errorf("blob type %q assigned to multiple pools: %q and %q", t, existing, poolName)
+				return ServerConfigPools{}, fmt.Errorf("blob type %q assigned to multiple pools: %q and %q", t, existing, poolName)
 			}
 			typeToPool[blobType] = poolName
 		}
 	}
 
 	for _, bt := range AllBlobTypes {
-		if _, ok := typeToPool[bt]; !ok {
-			if catchAllPool == "" {
-				var missing []string
-				for _, bt2 := range AllBlobTypes {
-					if _, ok := typeToPool[bt2]; !ok {
-						missing = append(missing, string(bt2))
-					}
-				}
-				return nil, fmt.Errorf("blob types not assigned to any pool: %s (use '*' as catch-all)", strings.Join(missing, ", "))
-			}
+		if _, ok := typeToPool[bt]; !ok && catchAllPool != "" {
 			typeToPool[bt] = catchAllPool
 		}
 	}
 
-	pools := make([]string, 0, len(poolSet))
-	for p := range poolSet {
-		pools = append(pools, p)
-	}
-	slices.Sort(pools)
-
-	return &PoolMapping{
-		typeToPool: typeToPool,
-		pools:      pools,
+	return ServerConfigPools{
+		Config:    typeToPool[BlobTypeConfig],
+		Keys:      typeToPool[BlobTypeKeys],
+		Locks:     typeToPool[BlobTypeLocks],
+		Snapshots: typeToPool[BlobTypeSnapshots],
+		Data:      typeToPool[BlobTypeData],
+		Index:     typeToPool[BlobTypeIndex],
 	}, nil
 }
 
@@ -150,9 +127,4 @@ func isValidBlobTypeForMapping(bt BlobType) bool {
 		}
 	}
 	return false
-}
-
-type PoolProperties struct {
-	RequiresAlignment bool
-	Alignment         uint64
 }
