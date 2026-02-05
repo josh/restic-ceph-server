@@ -12,7 +12,11 @@ import (
 	"github.com/ceph/go-ceph/rados"
 )
 
-var errConnectionUnavailable = errors.New("ceph connection unavailable")
+var (
+	errConnectionUnavailable = errors.New("ceph connection unavailable")
+	errPoolNotConfigured     = errors.New("pool not configured for blob type")
+	errRepoNotInitialized    = errors.New("repository not initialized")
+)
 
 type ConnectionManager struct {
 	mu                sync.RWMutex
@@ -25,14 +29,18 @@ type ConnectionManager struct {
 	maxObjectSize     int64
 	maxWriteSize      int64
 	poolProperties    map[string]*PoolProperties
+
+	serverConfig     *ServerConfig
+	serverConfigOnce sync.Once
+	serverConfigErr  error
 }
 
 type CephConfig struct {
-	PoolMapping   *PoolMapping
-	KeyringPath   string
-	ClientID      string
-	CephConf      string
-	MaxObjectSize int64
+	ConfigPoolName string
+	KeyringPath    string
+	ClientID       string
+	CephConf       string
+	MaxObjectSize  int64
 }
 
 func NewConnectionManager(config CephConfig) *ConnectionManager {
@@ -40,6 +48,7 @@ func NewConnectionManager(config CephConfig) *ConnectionManager {
 		config:            config,
 		minReconnectDelay: 1 * time.Second,
 		maxReconnectDelay: 30 * time.Second,
+		poolProperties:    make(map[string]*PoolProperties),
 	}
 
 	if err := cm.connect(); err != nil {
@@ -154,36 +163,11 @@ func (cm *ConnectionManager) connect() error {
 		slog.Warn("using default max write size", "default", maxWriteSize)
 	}
 
-	poolProps := make(map[string]*PoolProperties)
-	for _, poolName := range cm.config.PoolMapping.Pools() {
-		ioctx, err := conn.OpenIOContext(poolName)
-		if err != nil {
-			return fmt.Errorf("failed to open pool %q: %w", poolName, err)
-		}
-
-		props := &PoolProperties{
-			RequiresAlignment: false,
-			Alignment:         1,
-		}
-
-		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
-			props.RequiresAlignment = true
-			if align, err := ioctx.Alignment(); err == nil && align > 1 {
-				props.Alignment = align
-				slog.Debug("pool requires alignment", "pool", poolName, "alignment", align)
-			}
-		}
-
-		poolProps[poolName] = props
-		ioctx.Destroy()
-	}
-
 	cm.mu.Lock()
 	oldConn := cm.conn
 	cm.conn = conn
 	cm.maxObjectSize = maxSize
 	cm.maxWriteSize = maxWriteSize
-	cm.poolProperties = poolProps
 	cm.mu.Unlock()
 
 	if oldConn != nil {
@@ -237,9 +221,81 @@ func (cm *ConnectionManager) GetIOContextForPool(poolName string) (*rados.IOCont
 	return nil, errConnectionUnavailable
 }
 
-func (cm *ConnectionManager) GetIOContextForType(blobType BlobType) (*rados.IOContext, error) {
-	poolName := cm.config.PoolMapping.GetPoolForType(blobType)
-	return cm.GetIOContextForPool(poolName)
+func (cm *ConnectionManager) GetIOContextForType(blobType BlobType) (*rados.IOContext, string, error) {
+	if blobType == BlobTypeConfig {
+		ioctx, err := cm.GetIOContextForPool(cm.config.ConfigPoolName)
+		return ioctx, cm.config.ConfigPoolName, err
+	}
+
+	sc, err := cm.getServerConfig()
+	if err != nil {
+		return nil, "", err
+	}
+	if sc == nil {
+		return nil, "", errRepoNotInitialized
+	}
+
+	poolName := sc.Pools.GetPoolForType(blobType)
+	if poolName == "" {
+		return nil, "", fmt.Errorf("%w: %s", errPoolNotConfigured, blobType)
+	}
+
+	ioctx, err := cm.GetIOContextForPool(poolName)
+	return ioctx, poolName, err
+}
+
+func (cm *ConnectionManager) getServerConfig() (*ServerConfig, error) {
+	cm.serverConfigOnce.Do(func() {
+		conn, err := cm.GetConnection()
+		if err != nil {
+			cm.serverConfigErr = err
+			return
+		}
+
+		sc, err := LoadServerConfig(conn, cm.config.ConfigPoolName)
+		if err != nil {
+			if errors.Is(err, rados.ErrNotFound) {
+				cm.serverConfig = nil
+				cm.serverConfigErr = nil
+				return
+			}
+			cm.serverConfigErr = err
+			return
+		}
+
+		if sc != nil {
+			slog.Info("loaded server-config", "version", sc.Version,
+				"striper_enabled", sc.StriperEnabled)
+
+			cm.mu.Lock()
+			cm.poolProperties = probePoolProperties(conn, sc.Pools.UniquePools())
+			cm.mu.Unlock()
+		}
+
+		cm.serverConfig = sc
+	})
+
+	return cm.serverConfig, cm.serverConfigErr
+}
+
+func (cm *ConnectionManager) InvalidateServerConfig() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	cm.serverConfigOnce = sync.Once{}
+	cm.serverConfig = nil
+	cm.serverConfigErr = nil
+}
+
+func (cm *ConnectionManager) GetStriperEnabled() (bool, error) {
+	sc, err := cm.getServerConfig()
+	if err != nil {
+		return false, err
+	}
+	if sc == nil {
+		return false, errRepoNotInitialized
+	}
+	return sc.StriperEnabled, nil
 }
 
 func (cm *ConnectionManager) GetConnection() (*rados.Conn, error) {
@@ -296,7 +352,7 @@ func (cm *ConnectionManager) GetPoolAlignment(poolName string) (bool, uint64, er
 
 	props, ok := cm.poolProperties[poolName]
 	if !ok {
-		return false, 0, fmt.Errorf("pool %q not configured", poolName)
+		return false, 1, nil
 	}
 
 	return props.RequiresAlignment, props.Alignment, nil
@@ -363,6 +419,33 @@ func (cm *ConnectionManager) calculateBackoff(timeSinceLastReconnect time.Durati
 	}
 
 	return backoff
+}
+
+func probePoolProperties(conn *rados.Conn, poolNames []string) map[string]*PoolProperties {
+	poolProps := make(map[string]*PoolProperties)
+	for _, poolName := range poolNames {
+		ioctx, err := conn.OpenIOContext(poolName)
+		if err != nil {
+			if errors.Is(err, rados.ErrNotFound) {
+				slog.Debug("pool does not exist, skipping property probe", "pool", poolName)
+			} else {
+				slog.Warn("failed to probe pool properties", "pool", poolName, "error", err)
+			}
+			continue
+		}
+
+		props := &PoolProperties{RequiresAlignment: false, Alignment: 1}
+		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
+			props.RequiresAlignment = true
+			if align, err := ioctx.Alignment(); err == nil && align > 1 {
+				props.Alignment = align
+				slog.Debug("pool requires alignment", "pool", poolName, "alignment", align)
+			}
+		}
+		poolProps[poolName] = props
+		ioctx.Destroy()
+	}
+	return poolProps
 }
 
 func (cm *ConnectionManager) Shutdown() {
