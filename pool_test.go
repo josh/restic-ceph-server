@@ -42,25 +42,25 @@ func TestParsePoolMapping(t *testing.T) {
 		},
 		{
 			name:  "pool with specific types",
-			specs: []string{"datapool:data,index", "metapool:*"},
+			specs: []string{"restic_data:data,index", "restic_metadata:*"},
 			want: map[BlobType]string{
-				BlobTypeConfig:    "metapool",
-				BlobTypeKeys:      "metapool",
-				BlobTypeLocks:     "metapool",
-				BlobTypeSnapshots: "metapool",
-				BlobTypeData:      "datapool",
-				BlobTypeIndex:     "datapool",
+				BlobTypeConfig:    "restic_metadata",
+				BlobTypeKeys:      "restic_metadata",
+				BlobTypeLocks:     "restic_metadata",
+				BlobTypeSnapshots: "restic_metadata",
+				BlobTypeData:      "restic_data",
+				BlobTypeIndex:     "restic_data",
 			},
 		},
 		{
 			name:  "multiple pools with catch-all for remainder",
-			specs: []string{"datapool:data", "indexpool:index", "metapool:*"},
+			specs: []string{"restic_data:data", "indexpool:index", "restic_metadata:*"},
 			want: map[BlobType]string{
-				BlobTypeConfig:    "metapool",
-				BlobTypeKeys:      "metapool",
-				BlobTypeLocks:     "metapool",
-				BlobTypeSnapshots: "metapool",
-				BlobTypeData:      "datapool",
+				BlobTypeConfig:    "restic_metadata",
+				BlobTypeKeys:      "restic_metadata",
+				BlobTypeLocks:     "restic_metadata",
+				BlobTypeSnapshots: "restic_metadata",
+				BlobTypeData:      "restic_data",
 				BlobTypeIndex:     "indexpool",
 			},
 		},
@@ -98,12 +98,12 @@ func TestParsePoolMapping(t *testing.T) {
 		},
 		{
 			name:    "error: duplicate blob type assignment",
-			specs:   []string{"pool1:data", "pool2:data,index", "metapool:*"},
+			specs:   []string{"pool1:data", "pool2:data,index", "restic_metadata:*"},
 			wantErr: `blob type "data" assigned to multiple pools: "pool1" and "pool2"`,
 		},
 		{
 			name:    "error: missing blob types without catch-all",
-			specs:   []string{"datapool:data"},
+			specs:   []string{"restic_data:data"},
 			wantErr: "blob types not assigned to any pool: config, keys, locks, snapshots, index (use '*' as catch-all)",
 		},
 		{
@@ -123,14 +123,14 @@ func TestParsePoolMapping(t *testing.T) {
 		},
 		{
 			name:  "whitespace handling",
-			specs: []string{"  datapool : data , index  ", "metapool:*"},
+			specs: []string{"  restic_data : data , index  ", "restic_metadata:*"},
 			want: map[BlobType]string{
-				BlobTypeConfig:    "metapool",
-				BlobTypeKeys:      "metapool",
-				BlobTypeLocks:     "metapool",
-				BlobTypeSnapshots: "metapool",
-				BlobTypeData:      "datapool",
-				BlobTypeIndex:     "datapool",
+				BlobTypeConfig:    "restic_metadata",
+				BlobTypeKeys:      "restic_metadata",
+				BlobTypeLocks:     "restic_metadata",
+				BlobTypeSnapshots: "restic_metadata",
+				BlobTypeData:      "restic_data",
+				BlobTypeIndex:     "restic_data",
 			},
 		},
 	}
@@ -174,7 +174,7 @@ func TestParsePoolMapping(t *testing.T) {
 }
 
 func TestPoolMapping_GetPoolForType(t *testing.T) {
-	pm, err := ParsePoolMapping([]string{"datapool:data,index", "metapool:*"})
+	pm, err := ParsePoolMapping([]string{"restic_data:data,index", "restic_metadata:*"})
 	if err != nil {
 		t.Fatalf("ParsePoolMapping failed: %v", err)
 	}
@@ -183,12 +183,12 @@ func TestPoolMapping_GetPoolForType(t *testing.T) {
 		blobType BlobType
 		want     string
 	}{
-		{BlobTypeConfig, "metapool"},
-		{BlobTypeKeys, "metapool"},
-		{BlobTypeLocks, "metapool"},
-		{BlobTypeSnapshots, "metapool"},
-		{BlobTypeData, "datapool"},
-		{BlobTypeIndex, "datapool"},
+		{BlobTypeConfig, "restic_metadata"},
+		{BlobTypeKeys, "restic_metadata"},
+		{BlobTypeLocks, "restic_metadata"},
+		{BlobTypeSnapshots, "restic_metadata"},
+		{BlobTypeData, "restic_data"},
+		{BlobTypeIndex, "restic_data"},
 	}
 
 	for _, tt := range tests {
@@ -219,8 +219,8 @@ func TestPoolMapping_Pools(t *testing.T) {
 		},
 		{
 			name:  "multiple pools sorted",
-			specs: []string{"datapool:data", "indexpool:index", "metapool:*"},
-			want:  []string{"datapool", "indexpool", "metapool"},
+			specs: []string{"restic_data:data", "indexpool:index", "restic_metadata:*"},
+			want:  []string{"indexpool", "restic_data", "restic_metadata"},
 		},
 	}
 
