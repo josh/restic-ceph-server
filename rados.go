@@ -42,6 +42,7 @@ type radosIOContextWrapper struct {
 	radosCalls  *uint64
 	readBuffer  *BufferPool
 	writeBuffer *BufferPool
+	alignment   uint64
 }
 
 type striperIOContextWrapper struct {
@@ -50,6 +51,7 @@ type striperIOContextWrapper struct {
 	radosCalls  *uint64
 	readBuffer  *BufferPool
 	writeBuffer *BufferPool
+	alignment   uint64
 }
 
 func NewBufferPool(size int64) *BufferPool {
@@ -302,42 +304,61 @@ func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int6
 	hasher := sha256.New()
 
 	op := rados.CreateWriteOp()
+	defer op.Release()
 	op.Create(rados.CreateExclusive)
-
 	slog.Debug("rados.CreateWriteOp", "object", object)
 	atomic.AddUint64(r.radosCalls, 1)
-	opErr := op.Operate(r.ioctx, object, rados.OperationNoFlag)
-	op.Release()
-	if opErr != nil && opErr.Error() != rados.ErrObjectExists.Error() {
-		return 0, [32]byte{}, fmt.Errorf("create object: %w", opErr)
+	err = op.Operate(r.ioctx, object, rados.OperationNoFlag)
+	if err != nil && err != rados.ErrObjectExists {
+		return 0, [32]byte{}, fmt.Errorf("create object: %w", err)
+	}
+
+	alignment := int(r.alignment)
+	if alignment == 0 {
+		alignment = 1
+	}
+	if len(buffer) < alignment {
+		slog.Warn("write buffer smaller than alignment", "bufferSize", len(buffer), "alignment", alignment)
 	}
 
 	totalRead := int64(0)
-	bufferOffset := 0
+	bufferFilled := 0
 
 	for {
-		readN, readErr := rd.Read(buffer[bufferOffset:])
-		bufferOffset += readN
-		totalRead += int64(readN)
+		rn, readErr := rd.Read(buffer[bufferFilled:])
+		bufferFilled += rn
+		totalRead += int64(rn)
 
-		isEOF := (readErr == io.EOF)
+		isEOF := readErr == io.EOF
 		if readErr != nil && !isEOF {
 			return totalRead, [32]byte{}, readErr
 		}
 
-		shouldFlush := (bufferOffset == len(buffer)) || isEOF
-		if !shouldFlush {
+		var flushSize int
+		if isEOF {
+			flushSize = bufferFilled
+		} else if bufferFilled >= len(buffer) {
+			flushSize = (bufferFilled / alignment) * alignment
+		} else {
 			continue
 		}
 
-		data := buffer[:bufferOffset]
-		hasher.Write(data)
-		slog.Debug("rados.Append", "object", object, "size", len(data))
-		atomic.AddUint64(r.radosCalls, 1)
-		if err := r.ioctx.Append(object, data); err != nil {
-			return totalRead, [32]byte{}, fmt.Errorf("append object %s: %w", object, err)
+		if flushSize > 0 {
+			data := buffer[:flushSize]
+			hasher.Write(data)
+
+			slog.Debug("rados.Append", "object", object, "size", len(data), "aligned", len(data)%alignment == 0)
+			atomic.AddUint64(r.radosCalls, 1)
+			if err := r.ioctx.Append(object, data); err != nil {
+				return totalRead, [32]byte{}, fmt.Errorf("append: %w", err)
+			}
+
+			carryover := bufferFilled - flushSize
+			if carryover > 0 {
+				copy(buffer[:carryover], buffer[flushSize:bufferFilled])
+			}
+			bufferFilled = carryover
 		}
-		bufferOffset = 0
 
 		if isEOF {
 			return totalRead, [32]byte(hasher.Sum(nil)), nil
@@ -353,78 +374,91 @@ func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n in
 	hasher := sha256.New()
 
 	firstObjID := s.getObjectID(object, 0)
-	objectSizeStr := strconv.FormatUint(s.objectSize, 10)
 
 	op := rados.CreateWriteOp()
+	defer op.Release()
 	op.Create(rados.CreateExclusive)
+	objectSizeStr := strconv.FormatUint(s.objectSize, 10)
 	op.SetXattr(xattrStripeUnit, []byte(objectSizeStr))
 	op.SetXattr(xattrStripeCount, []byte("1"))
 	op.SetXattr(xattrObjectSize, []byte(objectSizeStr))
 	op.SetXattr(xattrSize, []byte("0"))
-
 	slog.Debug("rados.CreateWriteOp", "object", firstObjID)
 	atomic.AddUint64(s.radosCalls, 1)
-	opErr := op.Operate(s.ioctx, firstObjID, rados.OperationNoFlag)
-	op.Release()
-	if opErr != nil && opErr.Error() != rados.ErrObjectExists.Error() {
-		return 0, [32]byte{}, fmt.Errorf("create first object: %w", opErr)
+	err = op.Operate(s.ioctx, firstObjID, rados.OperationNoFlag)
+	if err != nil && err != rados.ErrObjectExists {
+		return 0, [32]byte{}, fmt.Errorf("create object: %w", err)
+	}
+
+	alignment := int(s.alignment)
+	if alignment == 0 {
+		alignment = 1
+	}
+	if len(buffer) < alignment {
+		slog.Warn("write buffer smaller than alignment", "bufferSize", len(buffer), "alignment", alignment)
 	}
 
 	totalRead := int64(0)
 	totalWritten := uint64(0)
-	bufferOffset := 0
+	bufferFilled := 0
 
 	for {
-		readN, readErr := rd.Read(buffer[bufferOffset:])
-		bufferOffset += readN
-		totalRead += int64(readN)
+		rn, readErr := rd.Read(buffer[bufferFilled:])
+		bufferFilled += rn
+		totalRead += int64(rn)
 
-		isEOF := (readErr == io.EOF)
+		isEOF := readErr == io.EOF
 		if readErr != nil && !isEOF {
 			return totalRead, [32]byte{}, readErr
 		}
 
-		shouldFlush := (bufferOffset == len(buffer)) || isEOF
-		if !shouldFlush {
+		var flushSize int
+		if isEOF {
+			flushSize = bufferFilled
+		} else if bufferFilled >= len(buffer) {
+			flushSize = (bufferFilled / alignment) * alignment
+		} else {
 			continue
 		}
 
-		data := buffer[:bufferOffset]
-		hasher.Write(data)
-		dataWritten := uint64(0)
-		writeOffset := totalWritten
+		if flushSize > 0 {
+			data := buffer[:flushSize]
+			hasher.Write(data)
+			writeOffset := totalWritten
 
-		for dataWritten < uint64(len(data)) {
-			objectNo := writeOffset / s.objectSize
-			objectOffset := writeOffset % s.objectSize
+			for len(data) > 0 {
+				objectNo := writeOffset / s.objectSize
+				availableInObject := s.objectSize - (writeOffset % s.objectSize)
 
-			availableInObject := s.objectSize - objectOffset
-			toWrite := uint64(len(data)) - dataWritten
-			if toWrite > availableInObject {
-				toWrite = availableInObject
+				toWrite := uint64(len(data))
+				if toWrite > availableInObject {
+					toWrite = availableInObject
+				}
+
+				objectID := s.getObjectID(object, objectNo)
+				slog.Debug("rados.Append", "object", objectID, "size", toWrite, "aligned", toWrite%uint64(alignment) == 0)
+				atomic.AddUint64(s.radosCalls, 1)
+				if err := s.ioctx.Append(objectID, data[:toWrite]); err != nil {
+					return totalRead, [32]byte{}, fmt.Errorf("append to %s: %w", objectID, err)
+				}
+
+				data = data[toWrite:]
+				writeOffset += toWrite
 			}
+			totalWritten = writeOffset
 
-			objectID := s.getObjectID(object, objectNo)
-			slog.Debug("rados.Append", "object", objectID, "size", toWrite)
-			atomic.AddUint64(s.radosCalls, 1)
-			err := s.ioctx.Append(objectID, data[dataWritten:dataWritten+toWrite])
-			if err != nil {
-				return totalRead, [32]byte{}, fmt.Errorf("append to object %d: %w", objectNo, err)
+			carryover := bufferFilled - flushSize
+			if carryover > 0 {
+				copy(buffer[:carryover], buffer[flushSize:bufferFilled])
 			}
-
-			dataWritten += toWrite
-			writeOffset += toWrite
+			bufferFilled = carryover
 		}
-
-		totalWritten += uint64(bufferOffset)
-		bufferOffset = 0
 
 		if isEOF {
 			slog.Debug("rados.SetXattr", "object", firstObjID, "xattr", xattrSize)
 			atomic.AddUint64(s.radosCalls, 1)
-			err := s.ioctx.SetXattr(firstObjID, xattrSize, []byte(strconv.FormatUint(totalWritten, 10)))
-			if err != nil {
-				return totalRead, [32]byte{}, fmt.Errorf("update size xattr: %w", err)
+			if err := s.ioctx.SetXattr(firstObjID, xattrSize, []byte(strconv.FormatUint(totalWritten, 10))); err != nil {
+				return totalRead, [32]byte{}, fmt.Errorf("set size xattr: %w", err)
 			}
 			return totalRead, [32]byte(hasher.Sum(nil)), nil
 		}

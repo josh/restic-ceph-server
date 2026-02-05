@@ -285,15 +285,6 @@ func main() {
 			"cluster_max_write_size", maxWriteSize)
 	}
 
-	if err := connMgr.ValidateBufferAlignment(config.WriteBufferSize); err != nil {
-		if errors.Is(err, errConnectionUnavailable) {
-			slog.Warn("failed to validate buffer alignment", "error", err)
-		} else {
-			slog.Error("invalid write buffer size", "error", err)
-			os.Exit(1)
-		}
-	}
-
 	h := &Handler{
 		connMgr:         connMgr,
 		appendOnly:      config.AppendOnly,

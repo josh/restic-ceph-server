@@ -1,0 +1,21 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock --enable-striper &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand striper-random 40000000
+sha256 striper-random HASH
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @striper-random http://localhost/data/$HASH
+
+exec curl --silent --unix-socket $WORK/restic.sock --head --include http://localhost/data/$HASH
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 40000000'
+
+exec curl --silent --unix-socket $WORK/restic.sock http://localhost/data/$HASH --output downloaded
+bin-cmp downloaded striper-random
+
+kill server
