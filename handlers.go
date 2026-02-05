@@ -34,6 +34,23 @@ type HandlerContext struct {
 	radosCalls    uint64
 }
 
+const serverConfigObjectName = "server-config"
+
+type ServerConfigPools struct {
+	Config    string `json:"config"`
+	Keys      string `json:"keys"`
+	Locks     string `json:"locks"`
+	Snapshots string `json:"snapshots"`
+	Data      string `json:"data"`
+	Index     string `json:"index"`
+}
+
+type ServerConfig struct {
+	Version        int               `json:"version"`
+	Pools          ServerConfigPools `json:"pools"`
+	StriperEnabled bool              `json:"striper_enabled"`
+}
+
 func (hctx *HandlerContext) Destroy() {
 	hctx.ioctx.Destroy()
 }
@@ -243,6 +260,48 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 		hctx.Destroy()
 	}()
 
+	_, err := hctx.radosIO.Stat(serverConfigObjectName)
+	if err == nil {
+		h.handleRadosError(rw, r, serverConfigObjectName, errObjectExists)
+		return
+	}
+	if !errors.Is(err, rados.ErrNotFound) {
+		h.handleRadosError(rw, r, serverConfigObjectName, fmt.Errorf("stat server-config: %w", err))
+		return
+	}
+
+	pm := h.connMgr.config.PoolMapping
+	sc := ServerConfig{
+		Version: 1,
+		Pools: ServerConfigPools{
+			Config:    pm.GetPoolForType(BlobTypeConfig),
+			Keys:      pm.GetPoolForType(BlobTypeKeys),
+			Locks:     pm.GetPoolForType(BlobTypeLocks),
+			Snapshots: pm.GetPoolForType(BlobTypeSnapshots),
+			Data:      pm.GetPoolForType(BlobTypeData),
+			Index:     pm.GetPoolForType(BlobTypeIndex),
+		},
+		StriperEnabled: h.striperEnabled,
+	}
+
+	data, err := json.Marshal(sc)
+	if err != nil {
+		h.handleRadosError(rw, r, serverConfigObjectName, fmt.Errorf("marshal server-config: %w", err))
+		return
+	}
+
+	op := rados.CreateWriteOp()
+	defer op.Release()
+	op.Create(rados.CreateExclusive)
+	op.WriteFull(data)
+
+	if err := op.Operate(hctx.ioctx, serverConfigObjectName, rados.OperationNoFlag); err != nil {
+		h.handleRadosError(rw, r, serverConfigObjectName, fmt.Errorf("create server-config: %w", err))
+		return
+	}
+
+	slog.Info("created server-config", "version", sc.Version, "striper_enabled", sc.StriperEnabled)
+
 	if err := hctx.createRadosObject(rw, r, "config", "config", false); err != nil {
 		h.handleRadosError(rw, r, "config", err)
 	}
@@ -286,6 +345,11 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		h.handleRadosError(rw, r, "config", fmt.Errorf("delete object %s: %w", "config", err))
 		return
 	}
+
+	if err := hctx.radosIO.Remove(serverConfigObjectName); err != nil {
+		slog.Debug("failed to remove server-config", "error", err)
+	}
+
 	rw.WriteHeader(http.StatusOK)
 }
 
@@ -626,7 +690,7 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 }
 
 func parseExpectedHash(object string) ([32]byte, error) {
-	if object == "config" {
+	if object == "config" || object == serverConfigObjectName {
 		return [32]byte{}, nil
 	}
 
