@@ -1,0 +1,21 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock --write-buffer-size 65536 &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand small-buffer-test 204800
+sha256 small-buffer-test HASH
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @small-buffer-test http://localhost/data/$HASH
+
+exec curl --silent --unix-socket $WORK/restic.sock --head --include http://localhost/data/$HASH
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 204800'
+
+exec curl --silent --unix-socket $WORK/restic.sock http://localhost/data/$HASH --output downloaded
+bin-cmp downloaded small-buffer-test
+
+kill server

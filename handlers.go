@@ -87,6 +87,9 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		return nil, fmt.Errorf("get max object size: %w", err)
 	}
 
+	poolName := h.connMgr.config.PoolMapping.GetPoolForType(blobType)
+	_, alignment, _ := h.connMgr.GetPoolAlignment(poolName)
+
 	hctx := &HandlerContext{
 		ioctx:         ioctx,
 		maxObjectSize: maxSize,
@@ -97,6 +100,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		radosCalls:  &hctx.radosCalls,
 		readBuffer:  h.readBufferPool,
 		writeBuffer: h.writeBufferPool,
+		alignment:   alignment,
 	}
 
 	if h.striperEnabled {
@@ -110,6 +114,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 			radosCalls:  &hctx.radosCalls,
 			readBuffer:  h.readBufferPool,
 			writeBuffer: h.writeBufferPool,
+			alignment:   alignment,
 		}
 	}
 

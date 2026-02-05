@@ -77,6 +77,7 @@ func TestScript(t *testing.T) {
 				Cmds: map[string]func(*testscript.TestScript, bool, []string){
 					"bin-cmp":            cmdBinCmp,
 					"bin-file":           cmdBinFile,
+					"sha256":             cmdSHA256,
 					"byte-count":         cmdByteCount,
 					"create-pool":        cmdCreatePool,
 					"rados-object-count": cmdRadosObjectCount,
@@ -761,6 +762,30 @@ func (onesReader) Read(p []byte) (n int, err error) {
 		p[i] = 0xFF
 	}
 	return len(p), nil
+}
+
+func cmdSHA256(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! sha256")
+	}
+	if len(args) < 1 || len(args) > 2 {
+		ts.Fatalf("usage: sha256 <path> [env-var]")
+	}
+
+	path := ts.MkAbs(args[0])
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		ts.Fatalf("failed to read file: %v", err)
+	}
+
+	hash := sha256.Sum256(data)
+	hashStr := hex.EncodeToString(hash[:])
+
+	if len(args) == 2 {
+		ts.Setenv(args[1], hashStr)
+	}
+	_, _ = fmt.Fprintln(ts.Stdout(), hashStr)
 }
 
 func cmdBinCmp(ts *testscript.TestScript, neg bool, args []string) {

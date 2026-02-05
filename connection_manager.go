@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -301,32 +300,6 @@ func (cm *ConnectionManager) GetPoolAlignment(poolName string) (bool, uint64, er
 	}
 
 	return props.RequiresAlignment, props.Alignment, nil
-}
-
-func (cm *ConnectionManager) ValidateBufferAlignment(bufferSize int64) error {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-
-	if cm.conn == nil {
-		return errConnectionUnavailable
-	}
-
-	var misaligned []string
-	for _, poolName := range cm.config.PoolMapping.Pools() {
-		props := cm.poolProperties[poolName]
-		if props.RequiresAlignment && props.Alignment > 1 {
-			if bufferSize%int64(props.Alignment) != 0 {
-				misaligned = append(misaligned, fmt.Sprintf("%s (requires %d)", poolName, props.Alignment))
-			}
-		}
-	}
-
-	if len(misaligned) > 0 {
-		return fmt.Errorf("buffer size %d not aligned for pools: %s",
-			bufferSize, strings.Join(misaligned, ", "))
-	}
-
-	return nil
 }
 
 func (cm *ConnectionManager) markConnectionBroken() {
